@@ -1,0 +1,685 @@
+const crypto = require('crypto');
+const userRepository = require('../repositories/user.repository');
+const teamRepository = require('../repositories/team.repository');
+const teamService = require('./team.service');
+const notificationService = require('./notification.service');
+const activityService = require('./activity.service');
+const policy = require('./policy.service');
+const ApiError = require('../utils/ApiError.util');
+const {
+  ROLE_VALUES,
+  ROLES,
+  ROLE_RANK,
+  isRoleAllowedForDepartment,
+  getAllowedRolesForDepartment,
+  getDefaultJobTitle,
+  getInviteRoleLabel,
+  normalizeDepartmentCode,
+} = require('../constants/roles.constant');
+const { PERMISSIONS, getInvitableRoles } = require('../constants/permissions.constant');
+const { NOTIFICATION_TYPES } = require('../constants/notification.constant');
+const { sendMail, getResendEmailStatus } = require('../emails/mailer.util');
+const { inviteEmail } = require('../emails/templates');
+const env = require('../config/env');
+const logger = require('../config/logger');
+const User = require('../models/user.model');
+const Department = require('../models/department.model');
+
+function generateTempPassword() {
+  const suffix = crypto.randomBytes(3).toString('hex');
+  return `Welcome1${suffix}`;
+}
+
+function hashToken(raw) {
+  return crypto.createHash('sha256').update(raw).digest('hex');
+}
+
+function createInviteToken() {
+  const raw = crypto.randomBytes(32).toString('hex');
+  return { raw, hashed: hashToken(raw) };
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function findOrCreateDepartmentByName(name, actor) {
+  const trimmed = String(name || '').trim();
+  if (trimmed.length < 2) {
+    throw ApiError.badRequest('Department name must be at least 2 characters');
+  }
+
+  const existing = await Department.findOne({
+    name: { $regex: `^${escapeRegex(trimmed)}$`, $options: 'i' },
+  });
+  if (existing) {
+    if (!existing.isActive) {
+      existing.isActive = true;
+      await existing.save();
+    }
+    return existing;
+  }
+
+  if (actor.role !== ROLES.SUPER_ADMIN) {
+    policy.assertPermission(actor, PERMISSIONS.DEPARTMENT_MANAGE);
+  }
+
+  let code = normalizeDepartmentCode(trimmed);
+  if (!code || code.length < 2) {
+    code = `dept_${Date.now().toString(36)}`;
+  }
+  const codeTaken = await Department.findOne({ code });
+  if (codeTaken) {
+    code = `${code}_${Date.now().toString(36).slice(-4)}`;
+  }
+
+  return Department.create({
+    name: trimmed,
+    code,
+    description: `Custom department: ${trimmed}`,
+    isActive: true,
+  });
+}
+
+async function findOrCreateTeamByName(name, departmentId, actor) {
+  const trimmed = String(name || '').trim();
+  if (trimmed.length < 2) {
+    throw ApiError.badRequest('Team name must be at least 2 characters');
+  }
+
+  const Team = require('../models/team.model');
+  const existing = await Team.findOne({
+    department: departmentId,
+    name: { $regex: `^${escapeRegex(trimmed)}$`, $options: 'i' },
+  });
+  if (existing) return existing;
+
+  if (actor.role !== ROLES.SUPER_ADMIN && actor.role !== ROLES.DEPT_HEAD) {
+    throw ApiError.forbidden('Only Super Admin or Department Head can create a team while inviting');
+  }
+
+  return Team.create({
+    name: trimmed,
+    department: departmentId,
+    members: [actor.id],
+    lead: actor.id,
+  });
+}
+
+class UserService {
+  async list(actor, { page, limit, q, department, role, includeInactive }) {
+    policy.assertPermission(actor, PERMISSIONS.USER_VIEW);
+
+    let filter = policy.userListFilter(actor);
+    if (!includeInactive || actor.role !== ROLES.SUPER_ADMIN) {
+      filter = { ...filter, isActive: true };
+    } else if (includeInactive === 'all') {
+      // no isActive constraint for SA
+      const { isActive: _ia, ...rest } = filter;
+      filter = rest;
+    }
+
+    if (q) {
+      filter.$and = [
+        ...(filter.$and || []),
+        {
+          $or: [
+            { name: { $regex: q, $options: 'i' } },
+            { email: { $regex: q, $options: 'i' } },
+            { jobTitle: { $regex: q, $options: 'i' } },
+          ],
+        },
+      ];
+    }
+    if (department) filter.department = department;
+    if (role) filter.role = role;
+
+    // Team leads: also include members of teams they lead
+    if (actor.role === ROLES.TEAM_LEAD && (actor.ledTeamIds || []).length) {
+      const teams = await teamRepository.findPaginated(
+        { _id: { $in: actor.ledTeamIds } },
+        { page: 1, limit: 100 }
+      );
+      const memberIds = new Set();
+      for (const t of teams.data || []) {
+        if (t.lead) memberIds.add(String(t.lead._id || t.lead));
+        for (const m of t.members || []) memberIds.add(String(m._id || m));
+      }
+      filter = {
+        $and: [
+          filter,
+          {
+            $or: [
+              { department: { $in: actor.teamDepartmentIds || [] } },
+              { _id: { $in: [...memberIds] } },
+            ],
+          },
+        ],
+      };
+    }
+
+    return userRepository.findPaginated(filter, { page, limit });
+  }
+
+  async me(userId) {
+    const user = await userRepository.findById(userId);
+    if (!user) throw ApiError.notFound('User not found');
+    const safe = user.toSafeObject();
+    const context = await policy.buildActorContext(userId);
+    return {
+      ...safe,
+      permissions: context.permissions,
+      headedDepartmentIds: context.headedDepartmentIds,
+      ledTeamIds: context.ledTeamIds,
+      teamIds: context.teamIds,
+    };
+  }
+
+  async getById(actor, id) {
+    policy.assertPermission(actor, PERMISSIONS.USER_VIEW);
+    const user = await userRepository.findById(id);
+    if (!user) throw ApiError.notFound('User not found');
+
+    const targetDept = user.department ? String(user.department) : null;
+    const deptAccess = targetDept
+      ? policy.getDepartmentAccess(actor, targetDept)
+      : actor.role === ROLES.SUPER_ADMIN
+        ? 'manage'
+        : 'none';
+
+    if (deptAccess === 'none' && String(user._id) !== actor.id) {
+      throw ApiError.forbidden('You cannot view this user');
+    }
+    return user.toSafeObject();
+  }
+
+  async updateMe(userId, { name, jobTitle, avatarUrl }) {
+    const user = await userRepository.findById(userId);
+    if (!user) throw ApiError.notFound('User not found');
+
+    const updates = {};
+    if (name !== undefined) updates.name = name;
+    if (jobTitle !== undefined) updates.jobTitle = jobTitle || null;
+    if (avatarUrl !== undefined) updates.avatarUrl = avatarUrl || null;
+
+    const updated = await userRepository.updateById(userId, updates);
+    return updated.toSafeObject();
+  }
+
+  async changePassword(userId, { currentPassword, newPassword }) {
+    const user = await userRepository.findById(userId, { withPassword: true });
+    if (!user) throw ApiError.notFound('User not found');
+
+    if (!user.password) {
+      throw ApiError.badRequest(
+        'This account has no password. Use forgot password or Google Sign-In settings.'
+      );
+    }
+
+    const isMatch = await user.comparePassword(currentPassword);
+    if (!isMatch) {
+      throw ApiError.unauthorized('Current password is incorrect');
+    }
+
+    user.password = newPassword;
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
+    await user.save();
+
+    return { message: 'Password updated successfully' };
+  }
+
+  /**
+   * Super Admin / scoped invite with Department → Role → Team → Team Lead.
+   */
+  async invite(payload, actor) {
+    policy.assertPermission(actor, PERMISSIONS.USER_INVITE);
+
+    const {
+      email,
+      name,
+      role = ROLES.EMPLOYEE,
+      jobTitle,
+      department,
+      departmentName,
+      team,
+      teamName,
+      teamLead,
+      setAsTeamLead = false,
+    } = payload;
+
+    const normalizedEmail = email.trim().toLowerCase();
+    const existing = await userRepository.existsByEmail(normalizedEmail);
+    if (existing) {
+      throw ApiError.conflict('A user with this email already exists');
+    }
+
+    if (!ROLE_VALUES.includes(role) || role === ROLES.SUPER_ADMIN) {
+      throw ApiError.badRequest('Invalid role');
+    }
+    if (!policy.canInviteRole(actor, role)) {
+      throw ApiError.forbidden(
+        `You cannot invite users with role "${role}". Allowed: ${getInvitableRoles(actor.role).join(', ') || 'none'}`
+      );
+    }
+
+    let resolvedDepartment = department || null;
+    let teamDoc = null;
+    let departmentDoc = null;
+
+    // Typed department name → find or create
+    if (!resolvedDepartment && departmentName) {
+      departmentDoc = await findOrCreateDepartmentByName(departmentName, actor);
+      resolvedDepartment = departmentDoc._id;
+    }
+
+    if (team) {
+      teamDoc = await teamRepository.findById(team);
+      if (!teamDoc) throw ApiError.notFound('Team not found');
+      resolvedDepartment =
+        teamDoc.department?.toString?.() || teamDoc.department || resolvedDepartment;
+
+      // Scope: team leads can only invite into teams they lead
+      if (actor.role === ROLES.TEAM_LEAD) {
+        policy.assertTeamManage(actor, teamDoc);
+      }
+      if (actor.role === ROLES.DEPT_HEAD) {
+        policy.assertDepartmentManage(
+          actor,
+          resolvedDepartment,
+          'invite into teams outside your department'
+        );
+      }
+    } else if (teamName && resolvedDepartment) {
+      teamDoc = await findOrCreateTeamByName(teamName, resolvedDepartment, actor);
+      // continue as if team was selected
+    } else if (resolvedDepartment) {
+      if (actor.role === ROLES.DEPT_HEAD) {
+        policy.assertDepartmentManage(
+          actor,
+          resolvedDepartment,
+          'invite into another department'
+        );
+      }
+      if (actor.role === ROLES.TEAM_LEAD) {
+        throw ApiError.forbidden('Team leads must invite into one of their teams');
+      }
+    } else if (actor.role !== ROLES.SUPER_ADMIN) {
+      throw ApiError.badRequest('Department or team is required — select one or type a name');
+    }
+
+    // Super Admin must still place invitees in a department so roles are assigned correctly
+    if (actor.role === ROLES.SUPER_ADMIN && !resolvedDepartment && !departmentName) {
+      throw ApiError.badRequest('Select a department so you can assign the correct role');
+    }
+
+    if (resolvedDepartment) {
+      departmentDoc = departmentDoc || (await Department.findById(resolvedDepartment));
+      if (!departmentDoc) throw ApiError.notFound('Department not found');
+
+      if (!isRoleAllowedForDepartment(departmentDoc.code, role)) {
+        const allowed = getAllowedRolesForDepartment(departmentDoc.code)
+          .map((r) => getInviteRoleLabel(departmentDoc.code, r))
+          .join(', ');
+        throw ApiError.badRequest(
+          `Role "${getInviteRoleLabel(departmentDoc.code, role)}" is not allowed in ${departmentDoc.name}. Allowed: ${allowed}`
+        );
+      }
+    }
+
+    const resolvedTeamId = team || (teamDoc?._id ? String(teamDoc._id) : null);
+
+    // Optional: validate selected team lead belongs to the team/department
+    if (teamLead && teamDoc) {
+      const leadId = String(teamDoc.lead?._id || teamDoc.lead);
+      if (leadId !== String(teamLead) && actor.role === ROLES.SUPER_ADMIN) {
+        // Allow SA to reassign lead when inviting a team_lead
+        if (role === ROLES.TEAM_LEAD && setAsTeamLead) {
+          // will set below
+        } else {
+          const candidate = await userRepository.findById(teamLead);
+          if (!candidate || candidate.role !== ROLES.TEAM_LEAD) {
+            throw ApiError.badRequest('Selected team lead is invalid');
+          }
+        }
+      }
+    }
+
+    const displayName =
+      (name && name.trim()) ||
+      normalizedEmail.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+
+    const temporaryPassword = generateTempPassword();
+    const { raw: inviteRaw, hashed: inviteHashed } = createInviteToken();
+    const inviteExpires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+    const inviter = await userRepository.findById(actor.id);
+    const resolvedJobTitle =
+      (jobTitle && String(jobTitle).trim()) ||
+      getDefaultJobTitle(departmentDoc?.code, role) ||
+      undefined;
+
+    const user = await userRepository.create({
+      name: displayName,
+      email: normalizedEmail,
+      password: temporaryPassword,
+      role: role || ROLES.EMPLOYEE,
+      jobTitle: resolvedJobTitle || null,
+      department: resolvedDepartment,
+      invitePending: true,
+      invitedBy: actor.id,
+      inviteToken: inviteHashed,
+      inviteTokenExpires: inviteExpires,
+    });
+
+    if (resolvedTeamId) {
+      await teamService.addMember(resolvedTeamId, user._id, actor.id);
+
+      if (
+        (role === ROLES.TEAM_LEAD && setAsTeamLead) ||
+        (role === ROLES.TEAM_LEAD && !teamDoc?.lead)
+      ) {
+        await teamRepository.updateById(resolvedTeamId, { lead: user._id });
+      }
+    }
+
+    if (role === ROLES.DEPT_HEAD && resolvedDepartment) {
+      await Department.findByIdAndUpdate(resolvedDepartment, { head: user._id });
+    }
+
+    const acceptUrl = `${env.CLIENT_URL}/accept-invite?token=${inviteRaw}`;
+    const loginUrl = `${env.CLIENT_URL}/login`;
+    const emailPayload = {
+      to: normalizedEmail,
+      recipientName: displayName,
+      inviterName: inviter?.name || 'A teammate',
+      temporaryPassword,
+      loginUrl,
+      acceptUrl,
+      emailTo: normalizedEmail,
+    };
+
+    // Invite email is required — send directly via Resend to the invitee's inbox
+    let emailFrom = env.EMAIL_FROM || (env.SMTP_USER ? `BIWORKSPACE <${env.SMTP_USER}>` : null);
+    let mailResult;
+    try {
+      mailResult = await sendMail({
+        to: normalizedEmail,
+        subject: `${inviter?.name || 'BIWORKSPACE'} invited you to BIWORKSPACE`,
+        html: inviteEmail(emailPayload),
+        text: [
+          `You're invited to BIWORKSPACE`,
+          ``,
+          `Hi ${displayName},`,
+          `${inviter?.name || 'A teammate'} invited you to join BIWORKSPACE as ${getInviteRoleLabel(departmentDoc?.code, role)}.`,
+          `This email was sent to ${normalizedEmail} from BIWORKSPACE.`,
+          ``,
+          `Email: ${normalizedEmail}`,
+          `Temporary password: ${temporaryPassword}`,
+          ``,
+          acceptUrl ? `Accept invite: ${acceptUrl}` : null,
+          `Sign in: ${loginUrl}`,
+        ]
+          .filter(Boolean)
+          .join('\n'),
+      });
+
+      if (mailResult?.from) emailFrom = mailResult.from;
+
+      const emailDelivered = Boolean(mailResult?.messageId) && !mailResult?.logged;
+      if (!emailDelivered) {
+        throw new Error(
+          mailResult?.logged
+            ? 'Email provider is not configured — cannot deliver invite email'
+            : 'Invite email was not accepted by the mail server'
+        );
+      }
+
+      // Confirm Resend delivered to this inbox (best-effort)
+      if (mailResult?.provider === 'resend' && mailResult.messageId && !mailResult.redirected) {
+        const status = await getResendEmailStatus(mailResult.messageId);
+        if (status?.lastEvent) {
+          logger.info(
+            `Invite email to ${normalizedEmail} Resend status=${status.lastEvent} id=${mailResult.messageId}`
+          );
+          mailResult.deliveryStatus = status.lastEvent;
+        }
+      }
+    } catch (err) {
+      logger.error(`Invite email required but failed for ${normalizedEmail}: ${err.message}`);
+      // Roll back invitee so we don't leave accounts without inbox access
+      try {
+        if (resolvedTeamId) {
+          await teamService.removeMember(resolvedTeamId, user._id, actor.id);
+        }
+        if (role === ROLES.DEPT_HEAD && resolvedDepartment) {
+          await Department.findByIdAndUpdate(resolvedDepartment, { head: null });
+        }
+        await User.findByIdAndDelete(user._id);
+      } catch (cleanupErr) {
+        logger.error(`Invite rollback failed: ${cleanupErr.message}`);
+      }
+
+      let message =
+        'Invite email could not be delivered to the user inbox. Check RESEND_API_KEY / EMAIL_FROM and try again.';
+      if (/BadCredentials|Invalid login|535/i.test(err.message)) {
+        message =
+          'Email login failed. Set RESEND_API_KEY and EMAIL_FROM=BIWORKSPACE <noreply@your-verified-domain> in backend/.env';
+      } else if (err.message) {
+        message = `${message} (${err.message})`;
+      }
+      throw ApiError.serviceUnavailable(message);
+    }
+
+    const emailDelivered = true;
+    const emailError = null;
+    const emailRedirectedTo = mailResult?.emailRedirectedTo || null;
+    const emailNote = mailResult?.redirected
+      ? `Resend test mode: email delivered to ${emailRedirectedTo} (your Resend account). Intended user: ${normalizedEmail}. Use a verified domain FROM address to send directly.`
+      : `Invite email sent to ${normalizedEmail} inbox via Resend.`;
+
+    await notificationService
+      .notify({
+        recipient: user._id,
+        sender: actor.id,
+        type: NOTIFICATION_TYPES.USER_INVITED,
+        message: resolvedTeamId
+          ? `${inviter?.name || 'Admin'} invited you and added you to a team`
+          : `${inviter?.name || 'Admin'} invited you to the workspace`,
+        entityType: 'Project',
+        entityId: user._id,
+      })
+      .catch(() => {});
+
+    await activityService
+      .record({
+        actor: actor.id,
+        action: 'user_invited',
+        entityType: 'Project',
+        entityId: user._id,
+        metadata: { email: normalizedEmail, role, department: resolvedDepartment, team: resolvedTeamId },
+      })
+      .catch(() => {});
+
+    const fresh = await userRepository.findById(user._id);
+
+    return {
+      user: fresh.toSafeObject(),
+      temporaryPassword,
+      inviteToken: inviteRaw,
+      acceptUrl,
+      emailSent: emailDelivered,
+      emailError,
+      emailTo: normalizedEmail,
+      emailFrom,
+      emailRedirectedTo,
+      emailNote,
+      emailDeliveryStatus: mailResult?.deliveryStatus || null,
+      teamId: resolvedTeamId || null,
+      loginUrl,
+      shareMessage: [
+        `You're invited to BIWORKSPACE by ${inviter?.name || 'a teammate'}.`,
+        `Accept invite: ${acceptUrl}`,
+        `Or login: ${loginUrl}`,
+        `Email: ${normalizedEmail}`,
+        `Temporary password: ${temporaryPassword}`,
+      ].join('\n'),
+    };
+  }
+
+  /**
+   * Accept invite via emailed token — set password and activate.
+   */
+  async acceptInvite({ token, password, name }) {
+    if (!token) throw ApiError.badRequest('Invite token is required');
+    const hashed = hashToken(token);
+
+    const user = await User.findOne({
+      inviteToken: hashed,
+      inviteTokenExpires: { $gt: new Date() },
+    }).select('+password +inviteToken +inviteTokenExpires');
+
+    if (!user) {
+      throw ApiError.badRequest('Invite link is invalid or has expired');
+    }
+
+    if (name && name.trim()) user.name = name.trim();
+    user.password = password;
+    user.invitePending = false;
+    user.inviteToken = null;
+    user.inviteTokenExpires = null;
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
+    await user.save();
+
+    return user.toSafeObject();
+  }
+
+  async previewInvite(token) {
+    const hashed = hashToken(token);
+    const user = await User.findOne({
+      inviteToken: hashed,
+      inviteTokenExpires: { $gt: new Date() },
+    })
+      .select('name email role jobTitle invitePending department')
+      .populate('department', 'name code')
+      .lean();
+    if (!user) throw ApiError.badRequest('Invite link is invalid or has expired');
+    return user;
+  }
+
+  /**
+   * Super Admin (or scoped manager) updates user role/department/active.
+   */
+  async updateUser(actor, id, updates) {
+    policy.assertPermission(actor, PERMISSIONS.USER_MANAGE);
+
+    const target = await userRepository.findById(id);
+    if (!target) throw ApiError.notFound('User not found');
+
+    if (actor.role !== ROLES.SUPER_ADMIN && !policy.canManageUser(actor, target)) {
+      throw ApiError.forbidden('You cannot manage this user');
+    }
+
+    const allowed = {};
+    if (updates.name !== undefined) allowed.name = updates.name;
+    if (updates.jobTitle !== undefined) allowed.jobTitle = updates.jobTitle || null;
+
+    if (updates.role !== undefined) {
+      if (!ROLE_VALUES.includes(updates.role) || updates.role === ROLES.SUPER_ADMIN) {
+        throw ApiError.badRequest('Invalid role');
+      }
+      if (
+        actor.role !== ROLES.SUPER_ADMIN &&
+        (ROLE_RANK[updates.role] || 0) >= (ROLE_RANK[actor.role] || 0)
+      ) {
+        throw ApiError.forbidden('Cannot assign a role equal or higher than your own');
+      }
+      allowed.role = updates.role;
+    }
+
+    if (updates.department !== undefined) {
+      if (actor.role !== ROLES.SUPER_ADMIN) {
+        policy.assertDepartmentManage(actor, updates.department, 'move users to this department');
+      }
+      allowed.department = updates.department || null;
+    }
+
+    if (updates.isActive !== undefined) {
+      if (actor.role !== ROLES.SUPER_ADMIN && actor.role !== ROLES.DEPT_HEAD) {
+        throw ApiError.forbidden('Only Super Admin or Department Head can deactivate users');
+      }
+      allowed.isActive = Boolean(updates.isActive);
+      allowed.deactivatedAt = updates.isActive ? null : new Date();
+      if (!updates.isActive) {
+        allowed.tokenVersion = (target.tokenVersion || 0) + 1;
+      }
+    }
+
+    const updated = await userRepository.updateById(id, allowed);
+
+    if (updates.team) {
+      await teamService.addMember(updates.team, id, actor.id);
+    }
+
+    await activityService
+      .record({
+        actor: actor.id,
+        action: 'user_updated',
+        entityType: 'Project',
+        entityId: id,
+        metadata: { fields: Object.keys(allowed) },
+      })
+      .catch(() => {});
+
+    return updated.toSafeObject();
+  }
+
+  async deactivate(actor, id) {
+    return this.updateUser(actor, id, { isActive: false });
+  }
+
+  async reactivate(actor, id) {
+    return this.updateUser(actor, id, { isActive: true });
+  }
+
+  /**
+   * Soft-delete: deactivate. Hard delete only for Super Admin on invite-pending users.
+   */
+  async deleteUser(actor, id) {
+    policy.assertPermission(actor, PERMISSIONS.USER_MANAGE);
+    if (actor.role !== ROLES.SUPER_ADMIN) {
+      throw ApiError.forbidden('Only Super Admin can delete users');
+    }
+    if (String(id) === String(actor.id)) {
+      throw ApiError.badRequest('Cannot delete your own account');
+    }
+
+    const target = await userRepository.findById(id);
+    if (!target) throw ApiError.notFound('User not found');
+
+    if (target.role === ROLES.SUPER_ADMIN) {
+      throw ApiError.forbidden('Cannot delete a Super Admin');
+    }
+
+    // Soft delete
+    const updated = await userRepository.updateById(id, {
+      isActive: false,
+      deactivatedAt: new Date(),
+      email: `deleted_${Date.now()}_${target.email}`,
+      tokenVersion: (target.tokenVersion || 0) + 1,
+    });
+
+    await activityService
+      .record({
+        actor: actor.id,
+        action: 'user_deleted',
+        entityType: 'Project',
+        entityId: id,
+        metadata: { email: target.email },
+      })
+      .catch(() => {});
+
+    return updated.toSafeObject();
+  }
+}
+
+module.exports = new UserService();

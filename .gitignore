@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+
+# Environment Variables
+.env
+.env.*
+!.env.example
+
+# Build
+dist/
+build/
+
+# Logs
+logs/
+*.log
+
+# Uploads
+uploads/
+
+# Coverage
+coverage/
+
+# Cache
+.cache/
+.eslintcache
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Certificates
+*.pem
+*.key
+*.crt
+*.pfx
+
+# Database
+*.sqlite
+*.db
+
+# Redis
+dump.rdb
+
+# Temporary Files
+tmp/
+temp/

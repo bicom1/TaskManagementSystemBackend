@@ -5,10 +5,12 @@ const env = require('../config/env');
 const REFRESH_COOKIE_NAME = 'refreshToken';
 const GOOGLE_STATE_COOKIE = 'google_oauth_state';
 
+// Cross-site (Vercel frontend → Render API) needs SameSite=None + Secure in production
+const isProd = env.NODE_ENV === 'production';
 const refreshCookieOptions = {
   httpOnly: true,
-  secure: env.NODE_ENV === 'production',
-  sameSite: 'lax',
+  secure: isProd,
+  sameSite: isProd ? 'none' : 'lax',
   path: '/api/v1/auth',
   maxAge: 7 * 24 * 60 * 60 * 1000,
 };
@@ -89,8 +91,8 @@ async function googleStart(req, res) {
   const state = authService.createOAuthState();
   res.cookie(GOOGLE_STATE_COOKIE, state, {
     httpOnly: true,
-    sameSite: 'lax',
-    secure: env.NODE_ENV === 'production',
+    sameSite: isProd ? 'none' : 'lax',
+    secure: isProd,
     maxAge: 10 * 60 * 1000,
     path: '/api/v1/auth',
   });

@@ -20,16 +20,25 @@ const ApiError = require('./utils/ApiError.util');
 
 const app = express();
 
+// Required on Render (proxy) so secure cookies + rate-limit IPs work
+app.set('trust proxy', 1);
+
 app.use(helmet());
 app.use(
   cors({
     origin(origin, callback) {
       const allowed = new Set([
         env.CLIENT_URL,
+        'https://task-management-system-frontend-z23.vercel.app',
         'http://localhost:5173',
         'http://127.0.0.1:5173',
       ]);
-      if (!origin || allowed.has(origin)) {
+
+      const isVercelPreview =
+        typeof origin === 'string' &&
+        /^https:\/\/task-management-system-frontend[\w-]*\.vercel\.app$/i.test(origin);
+
+      if (!origin || allowed.has(origin) || isVercelPreview) {
         return callback(null, true);
       }
       return callback(new Error(`CORS blocked for origin: ${origin}`));

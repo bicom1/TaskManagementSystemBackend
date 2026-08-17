@@ -14,10 +14,21 @@ const logger = require('../config/logger');
 
 class AuthService {
   getGoogleRedirectUri() {
-    return (
-      env.GOOGLE_REDIRECT_URI ||
-      `http://localhost:${env.PORT}/api/v1/auth/google/callback`
-    );
+    const configured = String(env.GOOGLE_REDIRECT_URI || '').trim();
+    const renderBase = String(process.env.RENDER_EXTERNAL_URL || '').trim().replace(/\/$/, '');
+
+    // Never send localhost redirect to Google from production (causes redirect_uri_mismatch)
+    if (env.NODE_ENV === 'production') {
+      if (configured && !/localhost|127\.0\.0\.1/i.test(configured)) {
+        return configured;
+      }
+      if (renderBase) {
+        return `${renderBase}/api/v1/auth/google/callback`;
+      }
+      return 'https://biworkspace-api.onrender.com/api/v1/auth/google/callback';
+    }
+
+    return configured || `http://localhost:${env.PORT}/api/v1/auth/google/callback`;
   }
 
   #getGoogleClient(redirectUri = this.getGoogleRedirectUri()) {
@@ -32,12 +43,15 @@ class AuthService {
   }
 
   getGoogleAuthUrl(state) {
-    const client = this.#getGoogleClient();
+    const redirectUri = this.getGoogleRedirectUri();
+    logger.info(`Google OAuth redirect_uri=${redirectUri}`);
+    const client = this.#getGoogleClient(redirectUri);
     return client.generateAuthUrl({
       access_type: 'offline',
       prompt: 'select_account',
       scope: ['openid', 'email', 'profile'],
       state,
+      redirect_uri: redirectUri,
     });
   }
 
@@ -211,10 +225,11 @@ class AuthService {
   }
 
   async googleAuthWithCode(code) {
-    const client = this.#getGoogleClient();
+    const redirectUri = this.getGoogleRedirectUri();
+    const client = this.#getGoogleClient(redirectUri);
     let tokens;
     try {
-      const result = await client.getToken(code);
+      const result = await client.getToken({ code, redirect_uri: redirectUri });
       tokens = result.tokens;
     } catch (err) {
       throw ApiError.unauthorized(

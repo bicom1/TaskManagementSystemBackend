@@ -67,6 +67,18 @@ app.use(auditLogger);
 
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok', uptime: process.uptime() }));
 
+// Root is not an API page — return a small OK payload (stops Render/browser 404 noise)
+app.get('/', (req, res) => {
+  res.status(200).json({
+    success: true,
+    name: 'BI Workspace API',
+    health: '/health',
+    docs: '/api-docs',
+    api: '/api/v1',
+  });
+});
+app.head('/', (req, res) => res.sendStatus(200));
+
 app.use('/uploads', express.static(require('path').join(process.cwd(), 'uploads')));
 
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));

@@ -266,10 +266,27 @@ class AuthService {
     const email = payload.email.toLowerCase().trim();
     const googleId = String(payload.sub);
     const name = payload.name || email.split('@')[0];
-    const avatarUrl = payload.picture || null;
+    // Prefer higher-res Google profile photo when available
+    let avatarUrl = payload.picture || null;
+    if (avatarUrl && typeof avatarUrl === 'string') {
+      avatarUrl = avatarUrl.replace(/=s\d+-c\b/, '=s256-c');
+      if (!/=s\d+/.test(avatarUrl) && avatarUrl.includes('googleusercontent.com')) {
+        avatarUrl = `${avatarUrl}${avatarUrl.includes('?') ? '&' : '?'}sz=256`;
+      }
+    }
 
     // 1) Already linked to this Google account
     let user = await userRepository.findByGoogleId(googleId);
+
+    // Always refresh Google photo/name on sign-in when Google provides them
+    if (user) {
+      const refresh = {};
+      if (avatarUrl) refresh.avatarUrl = avatarUrl;
+      if (name && name !== user.name) refresh.name = name;
+      if (Object.keys(refresh).length) {
+        user = await userRepository.updateById(user._id, refresh);
+      }
+    }
 
     // 2) Same email already registered (password / invite) → link, do not create duplicate
     if (!user) {
@@ -278,8 +295,8 @@ class AuthService {
         const updates = {
           googleId,
           invitePending: false,
-          avatarUrl: user.avatarUrl || avatarUrl,
         };
+        if (avatarUrl) updates.avatarUrl = avatarUrl;
         // Keep local provider if they already have a password so email login still works
         if (user.password) {
           updates.authProvider = 'local';
@@ -300,6 +317,9 @@ class AuthService {
               user = await userRepository.findByEmailInsensitive(email, { withPassword: true });
             }
             if (!user) throw err;
+            if (avatarUrl) {
+              user = await userRepository.updateById(user._id, { avatarUrl });
+            }
           } else {
             throw err;
           }
@@ -327,12 +347,11 @@ class AuthService {
           user =
             (await userRepository.findByGoogleId(googleId)) ||
             (await userRepository.findByEmailInsensitive(email, { withPassword: true }));
-          if (user && !user.googleId) {
-            user = await userRepository.updateById(user._id, {
-              googleId,
-              invitePending: false,
-              avatarUrl: user.avatarUrl || avatarUrl,
-            });
+          if (user) {
+            const recover = { invitePending: false };
+            if (!user.googleId) recover.googleId = googleId;
+            if (avatarUrl) recover.avatarUrl = avatarUrl;
+            user = await userRepository.updateById(user._id, recover);
           }
         }
         if (!user) {

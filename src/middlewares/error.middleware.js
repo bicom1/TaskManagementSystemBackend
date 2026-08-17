@@ -7,7 +7,18 @@ const ApiError = require('../utils/ApiError.util');
 function errorHandler(err, req, res, next) {
   let error = err;
 
-  if (!(error instanceof ApiError)) {
+  // Mongo duplicate key → conflict (do not leak raw driver text)
+  if (err?.code === 11000 && !(err instanceof ApiError)) {
+    const fields = Object.keys(err.keyPattern || err.keyValue || {});
+    const field = fields[0] || 'field';
+    const message =
+      field === 'email'
+        ? 'An account with this email already exists'
+        : field === 'googleId'
+          ? 'This Google account is already linked'
+          : 'Duplicate value';
+    error = ApiError.conflict(message);
+  } else if (!(error instanceof ApiError)) {
     const statusCode = error.statusCode || httpStatus.StatusCodes.INTERNAL_SERVER_ERROR;
     const message = error.message || 'Internal server error';
     error = new ApiError(statusCode, message, [], false);

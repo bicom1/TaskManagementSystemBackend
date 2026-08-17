@@ -7,7 +7,20 @@ class UserRepository {
   }
 
   async findByEmail(email, { withPassword = false } = {}) {
-    const query = User.findOne({ email });
+    const normalized = String(email || '').toLowerCase().trim();
+    const query = User.findOne({ email: normalized });
+    if (withPassword) query.select('+password');
+    return query.exec();
+  }
+
+  /** Case-insensitive email lookup (covers legacy mixed-case rows) */
+  async findByEmailInsensitive(email, { withPassword = false } = {}) {
+    const normalized = String(email || '').toLowerCase().trim();
+    if (!normalized) return null;
+    const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const query = User.findOne({
+      email: { $regex: `^${escaped}$`, $options: 'i' },
+    });
     if (withPassword) query.select('+password');
     return query.exec();
   }

@@ -264,22 +264,52 @@ class AuthService {
     }
 
     const email = payload.email.toLowerCase().trim();
-    const googleId = payload.sub;
+    const googleId = String(payload.sub);
     const name = payload.name || email.split('@')[0];
     const avatarUrl = payload.picture || null;
 
+    // 1) Already linked to this Google account
     let user = await userRepository.findByGoogleId(googleId);
 
+    // 2) Same email already registered (password / invite) → link, do not create duplicate
     if (!user) {
-      user = await userRepository.findByEmail(email);
+      user = await userRepository.findByEmailInsensitive(email, { withPassword: true });
       if (user) {
-        user = await userRepository.updateById(user._id, {
+        const updates = {
           googleId,
-          authProvider: user.password ? 'local' : 'google',
-          avatarUrl: user.avatarUrl || avatarUrl,
           invitePending: false,
-        });
-      } else {
+          avatarUrl: user.avatarUrl || avatarUrl,
+        };
+        // Keep local provider if they already have a password so email login still works
+        if (user.password) {
+          updates.authProvider = 'local';
+        } else {
+          updates.authProvider = 'google';
+        }
+        // Normalize email casing on the existing row
+        if (user.email !== email) {
+          updates.email = email;
+        }
+        try {
+          user = await userRepository.updateById(user._id, updates);
+        } catch (err) {
+          // googleId already on another row — use that account instead of failing
+          if (err?.code === 11000) {
+            user = await userRepository.findByGoogleId(googleId);
+            if (!user) {
+              user = await userRepository.findByEmailInsensitive(email, { withPassword: true });
+            }
+            if (!user) throw err;
+          } else {
+            throw err;
+          }
+        }
+      }
+    }
+
+    // 3) Brand-new Google user
+    if (!user) {
+      try {
         const userCount = await userRepository.countAll();
         const role = userCount === 0 ? 'super_admin' : undefined;
 
@@ -291,10 +321,30 @@ class AuthService {
           avatarUrl,
           ...(role && { role, jobTitle: 'Super Admin' }),
         });
+      } catch (err) {
+        // Race / duplicate email or googleId → authenticate existing account
+        if (err?.code === 11000) {
+          user =
+            (await userRepository.findByGoogleId(googleId)) ||
+            (await userRepository.findByEmailInsensitive(email, { withPassword: true }));
+          if (user && !user.googleId) {
+            user = await userRepository.updateById(user._id, {
+              googleId,
+              invitePending: false,
+              avatarUrl: user.avatarUrl || avatarUrl,
+            });
+          }
+        }
+        if (!user) {
+          logger.error('Google sign-in failed after duplicate key', err);
+          throw ApiError.badRequest(
+            'Could not complete Google sign-in. Try email login or contact support.'
+          );
+        }
       }
     }
 
-    if (!user.isActive) {
+    if (!user?.isActive) {
       throw ApiError.unauthorized('Account is deactivated');
     }
 

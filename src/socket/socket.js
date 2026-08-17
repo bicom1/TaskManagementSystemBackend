@@ -171,7 +171,7 @@ function emitProjectEvent(event, project, { teamId, ownerId, memberIds = [] } = 
   }
 }
 
-/** Live task board / list updates inside a Space */
+/** Live task board / list updates inside a Space + notify assignees personally */
 function emitTaskEvent(event, task, projectId) {
   if (!io || !task) return;
   const pid = String(projectId || task.project?._id || task.project);
@@ -181,6 +181,15 @@ function emitTaskEvent(event, task, projectId) {
   io.to(`project:${pid}`).emit('task:changed', { event, task: payload, projectId: pid });
   // Sidebar open-task counts for everyone watching the org
   io.emit('projects:counts', { projectId: pid });
+
+  // Push to each assignee's personal room so "Assigned to me" updates live
+  const assigneeIds = (payload.assignees || [])
+    .map((a) => String(a?._id || a))
+    .filter(Boolean);
+  for (const uid of assigneeIds) {
+    io.to(`user:${uid}`).emit('task:changed', { event, task: payload, projectId: pid });
+    io.to(`user:${uid}`).emit('task:assigned', { task: payload, projectId: pid });
+  }
 }
 
 module.exports = {

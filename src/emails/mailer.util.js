@@ -15,17 +15,38 @@ let activeProvider = null;
 
 function cleanSecret(value) {
   if (value == null) return value;
-  const s = String(value).trim();
+  let s = String(value).trim();
+  // Strip wrapping quotes (Render / .env often store "value" literally)
   if (
     (s.startsWith('"') && s.endsWith('"')) ||
     (s.startsWith("'") && s.endsWith("'"))
   ) {
-    return s.slice(1, -1);
+    s = s.slice(1, -1);
+  }
+  // Second pass if double-quoted
+  if (
+    (s.startsWith('"') && s.endsWith('"')) ||
+    (s.startsWith("'") && s.endsWith("'"))
+  ) {
+    s = s.slice(1, -1);
   }
   if (/^[a-zA-Z0-9 ]{16,20}$/.test(s) && s.includes(' ')) {
     return s.replace(/\s+/g, '');
   }
   return s;
+}
+
+/** Prefer SMTP_PASS_B64 when set — avoids # truncation in env files / dashboards */
+function resolveSmtpPass() {
+  const b64 = cleanSecret(env.SMTP_PASS_B64);
+  if (b64) {
+    try {
+      return Buffer.from(b64, 'base64').toString('utf8');
+    } catch {
+      logger.warn('SMTP_PASS_B64 is not valid base64');
+    }
+  }
+  return cleanSecret(env.SMTP_PASS);
 }
 
 function resetTransporter() {
@@ -86,9 +107,7 @@ function plainTextFromHtml(html, fallbackText) {
 }
 
 function isSmtpReady() {
-  return Boolean(
-    env.SMTP_HOST && cleanSecret(env.SMTP_USER) && cleanSecret(env.SMTP_PASS)
-  );
+  return Boolean(env.SMTP_HOST && cleanSecret(env.SMTP_USER) && resolveSmtpPass());
 }
 
 /**
@@ -116,8 +135,8 @@ function getTransporter() {
 
   const host = env.SMTP_HOST;
   const user = cleanSecret(env.SMTP_USER);
-  const pass = cleanSecret(env.SMTP_PASS);
-  const port = Number(env.SMTP_PORT) || 587;
+  const pass = resolveSmtpPass();
+  const port = Number(env.SMTP_PORT) || 465;
 
   if (host && user && pass) {
     smtpConfigured = true;
@@ -128,12 +147,16 @@ function getTransporter() {
       secure: port === 465,
       requireTLS: port === 587,
       auth: { user, pass },
+      authMethod: 'LOGIN',
       tls: {
         minVersion: 'TLSv1.2',
+        // cPanel / shared hosting often uses a name mismatch on the cert
         rejectUnauthorized: isGmail,
       },
     });
-    logger.info(`SMTP transporter configured (${host}:${port})`);
+    logger.info(
+      `SMTP transporter configured (${host}:${port}) user=${user} passLen=${pass.length}`
+    );
   } else {
     smtpConfigured = false;
     transporter = {
@@ -150,6 +173,11 @@ function getTransporter() {
         return { messageId: `dev-${Date.now()}`, accepted: [opts.to], logged: true };
       },
     };
+    if (!pass && (env.SMTP_HOST || env.SMTP_USER)) {
+      logger.warn(
+        'SMTP host/user set but password is empty — if the password starts with #, use SMTP_PASS_B64 instead'
+      );
+    }
   }
 
   return transporter;

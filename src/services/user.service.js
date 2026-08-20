@@ -478,10 +478,12 @@ class UserService {
       }
 
       let message =
-        'Invite email could not be delivered to the user inbox. Check RESEND_API_KEY / EMAIL_FROM and try again.';
+        'Invite email could not be delivered. Check SMTP settings on the server and try again.';
       if (/BadCredentials|Invalid login|535/i.test(err.message)) {
         message =
-          'Email login failed. Set RESEND_API_KEY and EMAIL_FROM=BIWORKSPACE <noreply@your-verified-domain> in backend/.env';
+          'SMTP login failed (535). On Render set SMTP_PASS_B64 (recommended) or quote SMTP_PASS, ' +
+          'confirm tasksmtp@bicommunications.ae password in cPanel, then redeploy. ' +
+          'Do not use the old House of Chilli mailbox.';
       } else if (err.message) {
         message = `${message} (${err.message})`;
       }

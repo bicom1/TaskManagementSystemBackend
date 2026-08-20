@@ -30,6 +30,7 @@ async function main() {
     user.role = ROLES.SUPER_ADMIN;
     user.jobTitle = 'Super Admin';
     user.password = PASSWORD;
+    user.markModified('password');
     user.isActive = true;
     user.invitePending = false;
     user.authProvider = 'local';
@@ -47,6 +48,12 @@ async function main() {
       invitePending: false,
     });
     console.log(`Created Super Admin: ${EMAIL}`);
+  }
+
+  const fresh = await User.findById(user._id).select('+password');
+  const ok = await fresh.comparePassword(PASSWORD);
+  if (!ok) {
+    throw new Error(`Password verify failed for ${EMAIL}`);
   }
 
   console.log({

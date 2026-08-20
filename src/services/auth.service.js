@@ -77,20 +77,35 @@ class AuthService {
   }
 
   async login({ email, password }) {
-    const user = await userRepository.findByEmail(email, { withPassword: true });
+    const normalizedEmail = String(email || '').toLowerCase().trim();
+    const user =
+      (await userRepository.findByEmail(normalizedEmail, { withPassword: true })) ||
+      (await userRepository.findByEmailInsensitive(normalizedEmail, { withPassword: true }));
+
     if (!user || !user.isActive) {
       throw ApiError.unauthorized('Invalid email or password');
     }
 
+    // Google-only accounts without a local password
     if (user.authProvider === 'google' && !user.password) {
       throw ApiError.unauthorized(
         'This account uses Google Sign-In. Please continue with Google.'
       );
     }
 
+    if (!user.password) {
+      throw ApiError.unauthorized('Invalid email or password');
+    }
+
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
       throw ApiError.unauthorized('Invalid email or password');
+    }
+
+    // Ensure email/password accounts stay on local provider after a successful login
+    if (user.authProvider !== 'local') {
+      await userRepository.updateById(user._id, { authProvider: 'local' });
+      user.authProvider = 'local';
     }
 
     await userRepository.updateLastLogin(user._id);

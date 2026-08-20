@@ -4,6 +4,8 @@
  * - Development Team Lead: ibrahimimraniu@gmail.com
  *
  * Usage: npm run seed:key-accounts
+ *
+ * Always force-hashes passwords (markModified) so email/password login works.
  */
 require('dotenv').config();
 const mongoose = require('mongoose');
@@ -32,31 +34,43 @@ const DEV_LEAD = {
 
 async function upsertLocalUser({ email, password, name, role, jobTitle, department }) {
   let user = await User.findOne({ email }).select('+password');
+  const created = !user;
   if (user) {
     user.name = name;
     user.role = role;
     user.jobTitle = jobTitle;
     user.password = password;
+    user.markModified('password'); // force bcrypt hash even if value looks unchanged
     user.isActive = true;
     user.invitePending = false;
     user.authProvider = 'local';
     if (department) user.department = department;
     await user.save();
-    return { user, created: false };
+  } else {
+    user = await User.create({
+      name,
+      email,
+      password,
+      role,
+      jobTitle,
+      department: department || null,
+      authProvider: 'local',
+      isActive: true,
+      invitePending: false,
+    });
   }
 
-  user = await User.create({
-    name,
-    email,
-    password,
-    role,
-    jobTitle,
-    department: department || null,
-    authProvider: 'local',
-    isActive: true,
-    invitePending: false,
-  });
-  return { user, created: true };
+  // Verify login will succeed with the intended password
+  const fresh = await User.findById(user._id).select('+password');
+  const ok = await fresh.comparePassword(password);
+  if (!ok) {
+    throw new Error(`Password verify failed for ${email} — login would not work`);
+  }
+  if (!/^\$2[aby]\$/.test(fresh.password || '')) {
+    throw new Error(`Password was not bcrypt-hashed for ${email}`);
+  }
+
+  return { user: fresh, created };
 }
 
 async function ensureDevelopmentDept() {
@@ -104,36 +118,39 @@ async function main() {
   }
 
   await mongoose.connect(uri);
-  console.log('Connected. Ensuring key accounts…');
+  console.log('Connected. Ensuring key accounts (with login-ready passwords)…');
 
-  const { user: superAdmin, created: saCreated } = await upsertLocalUser({
+  const { user: superAdmin } = await upsertLocalUser({
     ...SUPER_ADMIN,
     role: ROLES.SUPER_ADMIN,
   });
-  console.log(
-    `${saCreated ? 'Created' : 'Updated'} Super Admin: ${SUPER_ADMIN.email}`
-  );
+  console.log(`Super Admin ready: ${SUPER_ADMIN.email} (${superAdmin.role})`);
 
   const devDept = await ensureDevelopmentDept();
-  const { user: devLead, created: leadCreated } = await upsertLocalUser({
+  const { user: devLead } = await upsertLocalUser({
     ...DEV_LEAD,
     role: ROLES.TEAM_LEAD,
     department: devDept._id,
   });
-  console.log(
-    `${leadCreated ? 'Created' : 'Updated'} Development Team Lead: ${DEV_LEAD.email}`
-  );
+  console.log(`Dev Team Lead ready: ${DEV_LEAD.email} (${devLead.role})`);
 
-  // Prefer this lead as department contact when none set
   if (!devDept.head) {
     devDept.head = devLead._id;
     await devDept.save();
   }
 
-  const { team, created: teamCreated } = await ensureDevTeam(devDept, devLead);
-  console.log(
-    `${teamCreated ? 'Created' : 'Updated'} team "${team.name}" with lead ${DEV_LEAD.email}`
-  );
+  const { team } = await ensureDevTeam(devDept, devLead);
+  console.log(`Team ready: "${team.name}"`);
+
+  // Smoke-test AuthService.login the same way the API does
+  const authService = require('../services/auth.service');
+  for (const account of [
+    { email: SUPER_ADMIN.email, password: SUPER_ADMIN.password, label: 'Super Admin' },
+    { email: DEV_LEAD.email, password: DEV_LEAD.password, label: 'Dev Team Lead' },
+  ]) {
+    const result = await authService.login(account);
+    console.log(`Login OK — ${account.label}: ${result.user.email} / ${result.user.role}`);
+  }
 
   console.log('\n—— Share these logins ——');
   console.log(
@@ -143,15 +160,12 @@ async function main() {
           email: SUPER_ADMIN.email,
           password: SUPER_ADMIN.password,
           role: ROLES.SUPER_ADMIN,
-          name: SUPER_ADMIN.name,
         },
         developmentTeamLead: {
           email: DEV_LEAD.email,
           password: DEV_LEAD.password,
           role: ROLES.TEAM_LEAD,
           jobTitle: DEV_LEAD.jobTitle,
-          name: DEV_LEAD.name,
-          department: 'Development',
           team: team.name,
         },
       },

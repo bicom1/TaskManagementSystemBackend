@@ -408,8 +408,16 @@ class UserService {
       emailTo: normalizedEmail,
     };
 
-    // Invite email is required — send directly via Resend to the invitee's inbox
-    let emailFrom = env.EMAIL_FROM || (env.SMTP_USER ? `BIWORKSPACE <${env.SMTP_USER}>` : null);
+    // Invite email via BI Communications SMTP (tasksmtp@bicommunications.ae)
+    let emailFrom =
+      (env.SMTP_USER && `BIWORKSPACE <${String(env.SMTP_USER).replace(/^["']|["']$/g, '')}>`) ||
+      env.EMAIL_FROM ||
+      'BIWORKSPACE <tasksmtp@bicommunications.ae>';
+    if (/houseofchilli\.pk/i.test(String(emailFrom))) {
+      emailFrom = env.SMTP_USER
+        ? `BIWORKSPACE <${String(env.SMTP_USER).replace(/^["']|["']$/g, '')}>`
+        : 'BIWORKSPACE <tasksmtp@bicommunications.ae>';
+    }
     let mailResult;
     try {
       mailResult = await sendMail({

@@ -33,8 +33,8 @@ const envSchema = z.object({
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
   EMAIL_FROM: z.string().default('BIWORKSPACE <tasksmtp@bicommunications.ae>'),
-  /** auto | resend | brevo | smtp */
-  EMAIL_PROVIDER: z.string().optional().default('auto'),
+  /** smtp | auto | resend | brevo — default smtp for BI Communications mailbox */
+  EMAIL_PROVIDER: z.string().optional().default('smtp'),
   /** Recommended for local + live invite delivery: https://resend.com */
   RESEND_API_KEY: z.string().optional(),
   /** Alternative: https://www.brevo.com */

@@ -34,20 +34,46 @@ function resetTransporter() {
   activeProvider = null;
 }
 
+/** Never send as the old House of Chilli mailbox */
+const LEGACY_FROM_RE = /houseofchilli\.pk/i;
+
+function preferredFromAddress() {
+  const smtpUser = cleanSecret(env.SMTP_USER);
+  if (smtpUser) return `BIWORKSPACE <${smtpUser}>`;
+  return 'BIWORKSPACE <tasksmtp@bicommunications.ae>';
+}
+
 function parseFromAddress(fromValue) {
-  const raw =
-    fromValue ||
-    env.EMAIL_FROM ||
-    (env.SMTP_USER ? `BIWORKSPACE <${env.SMTP_USER}>` : 'BIWORKSPACE <onboarding@resend.dev>');
+  let raw = fromValue || env.EMAIL_FROM || preferredFromAddress();
+
+  // Render/shell often mangles unquoted EMAIL_FROM=Name <email> — recover from SMTP_USER
+  if (LEGACY_FROM_RE.test(String(raw)) || !String(raw).includes('@')) {
+    const preferred = preferredFromAddress();
+    if (LEGACY_FROM_RE.test(String(raw))) {
+      logger.warn(`Ignoring legacy EMAIL_FROM (${raw}) — using ${preferred}`);
+    }
+    raw = preferred;
+  }
+
   const match = String(raw).match(/^(.*)<([^>]+)>$/);
   if (match) {
+    const email = match[2].trim();
+    const name = match[1].trim().replace(/^"|"$/g, '') || 'BIWORKSPACE';
+    if (LEGACY_FROM_RE.test(email)) {
+      return parseFromAddress(preferredFromAddress());
+    }
     return {
-      name: match[1].trim().replace(/^"|"$/g, '') || 'BIWORKSPACE',
-      email: match[2].trim(),
-      formatted: raw,
+      name,
+      email,
+      formatted: `${name} <${email}>`,
     };
   }
-  return { name: 'BIWORKSPACE', email: String(raw).trim(), formatted: `BIWORKSPACE <${raw}>` };
+
+  const email = String(raw).trim();
+  if (LEGACY_FROM_RE.test(email) || !email.includes('@')) {
+    return parseFromAddress(preferredFromAddress());
+  }
+  return { name: 'BIWORKSPACE', email, formatted: `BIWORKSPACE <${email}>` };
 }
 
 function plainTextFromHtml(html, fallbackText) {
@@ -59,19 +85,29 @@ function plainTextFromHtml(html, fallbackText) {
     .slice(0, 4000);
 }
 
-/** Prefer Resend → Brevo → SMTP for local + live deliverability */
+function isSmtpReady() {
+  return Boolean(
+    env.SMTP_HOST && cleanSecret(env.SMTP_USER) && cleanSecret(env.SMTP_PASS)
+  );
+}
+
+/**
+ * Prefer BI Communications SMTP whenever SMTP_* is configured.
+ * Set EMAIL_PROVIDER=resend|brevo only when SMTP is NOT configured.
+ */
 function resolveEmailProvider() {
-  const forced = String(env.EMAIL_PROVIDER || 'auto').trim().toLowerCase();
+  const forced = String(env.EMAIL_PROVIDER || 'smtp').trim().toLowerCase();
   const resendKey = cleanSecret(env.RESEND_API_KEY);
   const brevoKey = cleanSecret(env.BREVO_API_KEY);
+  const smtpReady = isSmtpReady();
+
+  // Always use BI Communications SMTP when host/user/pass are present
+  if (smtpReady) return 'smtp';
 
   if (forced === 'resend' && resendKey) return 'resend';
   if (forced === 'brevo' && brevoKey) return 'brevo';
-  if (forced === 'smtp') return 'smtp';
-
   if (resendKey) return 'resend';
   if (brevoKey) return 'brevo';
-  if (env.SMTP_HOST && env.SMTP_USER && env.SMTP_PASS) return 'smtp';
   return 'none';
 }
 
@@ -138,9 +174,7 @@ async function sendViaResend({ to, subject, html, text, replyTo }, { allowRedire
   const apiKey = cleanSecret(env.RESEND_API_KEY);
   if (!apiKey) throw new Error('RESEND_API_KEY is not set');
 
-  const fromInfo = parseFromAddress(
-    env.EMAIL_FROM || 'BIWORKSPACE <onboarding@resend.dev>'
-  );
+  const fromInfo = parseFromAddress(preferredFromAddress());
 
   // Custom verified domain → always send to the real recipient inbox
   const usingVerifiedDomain = !/onboarding@resend\.dev$/i.test(fromInfo.email);
@@ -245,11 +279,7 @@ async function sendViaBrevo({ to, subject, html, text, replyTo }) {
   const apiKey = cleanSecret(env.BREVO_API_KEY);
   if (!apiKey) throw new Error('BREVO_API_KEY is not set');
 
-  const fromInfo = parseFromAddress(
-    env.EMAIL_FROM ||
-      (env.SMTP_USER ? `BIWORKSPACE <${env.SMTP_USER}>` : null) ||
-      'BIWORKSPACE <noreply@bicommunications.ae>'
-  );
+  const fromInfo = parseFromAddress(preferredFromAddress());
 
   const payload = {
     sender: { name: fromInfo.name, email: fromInfo.email },
@@ -407,7 +437,7 @@ async function verifySmtpConnection() {
       ok: true,
       reason: 'Resend API key configured',
       provider: 'resend',
-      user: parseFromAddress(env.EMAIL_FROM || 'BIWORKSPACE <onboarding@resend.dev>').email,
+      user: parseFromAddress(preferredFromAddress()).email,
     };
   }
 

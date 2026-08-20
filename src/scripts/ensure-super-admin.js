@@ -7,11 +7,11 @@ const mongoose = require('mongoose');
 const User = require('../models/user.model');
 const { ROLES } = require('../constants/roles.constant');
 
-const EMAIL = (process.env.SEED_SUPER_ADMIN_EMAIL || 'hamzaumar2033@gmail.com')
+const EMAIL = (process.env.SEED_SUPER_ADMIN_EMAIL || 'ibrahim@bicommunications.ae')
   .toLowerCase()
   .trim();
-const PASSWORD = process.env.SEED_SUPER_ADMIN_PASSWORD || 'hamzabi@123';
-const NAME = process.env.SEED_SUPER_ADMIN_NAME || 'Hamza Umar';
+const PASSWORD = process.env.SEED_SUPER_ADMIN_PASSWORD || 'Ibrahim@Admin123';
+const NAME = process.env.SEED_SUPER_ADMIN_NAME || 'Ibrahim';
 
 async function main() {
   const uri = process.env.MONGO_URI;

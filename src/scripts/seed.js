@@ -33,9 +33,9 @@ async function seed() {
   ]);
 
   const superAdmin = await User.create({
-    name: 'Hamza Umar',
-    email: 'hamzaumar2033@gmail.com',
-    password: 'hamzabi@123',
+    name: 'Ibrahim',
+    email: 'ibrahim@bicommunications.ae',
+    password: 'Ibrahim@Admin123',
     role: ROLES.SUPER_ADMIN,
     jobTitle: 'Super Admin',
   });
@@ -101,9 +101,9 @@ async function seed() {
   });
 
   const devLead = await User.create({
-    name: 'Dana Lead',
-    email: 'dev.lead@hp.local',
-    password: 'Lead1234',
+    name: 'Ibrahim Imran',
+    email: 'ibrahimimraniu@gmail.com',
+    password: 'Ibrahim@Lead123',
     role: ROLES.TEAM_LEAD,
     jobTitle: 'Development Team Lead',
     department: devDept._id,
@@ -429,7 +429,8 @@ async function seed() {
 
   console.log('Seed complete.\n');
   console.log('Accounts:');
-  console.log('  Super Admin     hamzaumar2033@gmail.com / hamzabi@123');
+  console.log('  Super Admin     ibrahim@bicommunications.ae / Ibrahim@Admin123');
+  console.log('  Dev Team Lead   ibrahimimraniu@gmail.com / Ibrahim@Lead123');
   console.log('  SEO Head        seo.head@hp.local / Lead1234');
   console.log('  SEO Team Lead   seo.lead@hp.local / Lead1234');
   console.log('  SEO Executive   seo.exec@hp.local / Member1234');

@@ -55,13 +55,13 @@ function resetTransporter() {
   activeProvider = null;
 }
 
-/** Never send as the old House of Chilli mailbox */
-const LEGACY_FROM_RE = /houseofchilli\.pk/i;
+/** Never send as the old House of Chilli / outdated mailboxes */
+const LEGACY_FROM_RE = /houseofchilli\.pk|tasksmtp@bicommunications\.ae/i;
 
 function preferredFromAddress() {
   const smtpUser = cleanSecret(env.SMTP_USER);
   if (smtpUser) return `BIWORKSPACE <${smtpUser}>`;
-  return 'BIWORKSPACE <tasksmtp@bicommunications.ae>';
+  return 'BIWORKSPACE <noreply@bicomworkspace.com>';
 }
 
 function parseFromAddress(fromValue) {
@@ -423,8 +423,8 @@ async function sendMail({ to, subject, html, text, replyTo }) {
       if (isResendRecipientLimit) {
         throw new Error(
           'Resend can only email your account address until you verify a domain. ' +
-            'Go to https://resend.com/domains , add bicommunications.ae, then set ' +
-            'EMAIL_FROM=BIWORKSPACE <tasksmtp@bicommunications.ae> so invites reach any user.'
+            'Go to https://resend.com/domains , add bicomworkspace.com, then set ' +
+            'EMAIL_FROM="BIWORKSPACE <noreply@bicomworkspace.com>" so invites reach any user.'
         );
       }
       throw err;

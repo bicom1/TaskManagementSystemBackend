@@ -408,15 +408,15 @@ class UserService {
       emailTo: normalizedEmail,
     };
 
-    // Invite email via BI Communications SMTP (tasksmtp@bicommunications.ae)
+    // Invite email via BIWORKSPACE SMTP (noreply@bicomworkspace.com)
     let emailFrom =
       (env.SMTP_USER && `BIWORKSPACE <${String(env.SMTP_USER).replace(/^["']|["']$/g, '')}>`) ||
       env.EMAIL_FROM ||
-      'BIWORKSPACE <tasksmtp@bicommunications.ae>';
-    if (/houseofchilli\.pk/i.test(String(emailFrom))) {
+      'BIWORKSPACE <noreply@bicomworkspace.com>';
+    if (/houseofchilli\.pk|tasksmtp@bicommunications\.ae/i.test(String(emailFrom))) {
       emailFrom = env.SMTP_USER
         ? `BIWORKSPACE <${String(env.SMTP_USER).replace(/^["']|["']$/g, '')}>`
-        : 'BIWORKSPACE <tasksmtp@bicommunications.ae>';
+        : 'BIWORKSPACE <noreply@bicomworkspace.com>';
     }
     let mailResult;
     try {
@@ -482,7 +482,7 @@ class UserService {
       if (/BadCredentials|Invalid login|535/i.test(err.message)) {
         message =
           'SMTP login failed (535). On Render set SMTP_PASS_B64 (recommended) or quote SMTP_PASS, ' +
-          'confirm tasksmtp@bicommunications.ae password in cPanel, then redeploy. ' +
+          'confirm noreply@bicomworkspace.com password in cPanel, then redeploy. ' +
           'Do not use the old House of Chilli mailbox.';
       } else if (err.message) {
         message = `${message} (${err.message})`;

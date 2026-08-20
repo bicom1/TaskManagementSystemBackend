@@ -34,8 +34,8 @@ const envSchema = z.object({
   SMTP_PASS: z.string().optional(),
   /** Base64 of the SMTP password — use when the password starts with # or has special chars */
   SMTP_PASS_B64: z.string().optional(),
-  EMAIL_FROM: z.string().default('BIWORKSPACE <tasksmtp@bicommunications.ae>'),
-  /** smtp | auto | resend | brevo — default smtp for BI Communications mailbox */
+  EMAIL_FROM: z.string().default('BIWORKSPACE <noreply@bicomworkspace.com>'),
+  /** smtp | auto | resend | brevo — default smtp for BIWORKSPACE mailbox */
   EMAIL_PROVIDER: z.string().optional().default('smtp'),
   /** Recommended for local + live invite delivery: https://resend.com */
   RESEND_API_KEY: z.string().optional(),

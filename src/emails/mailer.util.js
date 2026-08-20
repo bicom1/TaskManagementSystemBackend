@@ -142,7 +142,7 @@ async function sendViaResend({ to, subject, html, text, replyTo }, { allowRedire
     env.EMAIL_FROM || 'BIWORKSPACE <onboarding@resend.dev>'
   );
 
-  // Custom verified domain (e.g. houseofchilli.pk) → always send to the real recipient inbox
+  // Custom verified domain → always send to the real recipient inbox
   const usingVerifiedDomain = !/onboarding@resend\.dev$/i.test(fromInfo.email);
 
   const payload = {

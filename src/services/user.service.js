@@ -253,8 +253,12 @@ class UserService {
       throw ApiError.conflict('A user with this email already exists');
     }
 
-    if (!ROLE_VALUES.includes(role) || role === ROLES.SUPER_ADMIN) {
+    if (!ROLE_VALUES.includes(role)) {
       throw ApiError.badRequest('Invalid role');
+    }
+    // Only Super Admin may grant Super Admin access
+    if (role === ROLES.SUPER_ADMIN && actor.role !== ROLES.SUPER_ADMIN) {
+      throw ApiError.forbidden('Only Super Admin can invite another Super Admin');
     }
     if (!policy.canInviteRole(actor, role)) {
       throw ApiError.forbidden(
@@ -307,12 +311,17 @@ class UserService {
       throw ApiError.badRequest('Department or team is required — select one or type a name');
     }
 
-    // Super Admin must still place invitees in a department so roles are assigned correctly
-    if (actor.role === ROLES.SUPER_ADMIN && !resolvedDepartment && !departmentName) {
+    // Super Admin invitees do not require a department
+    if (
+      actor.role === ROLES.SUPER_ADMIN &&
+      role !== ROLES.SUPER_ADMIN &&
+      !resolvedDepartment &&
+      !departmentName
+    ) {
       throw ApiError.badRequest('Select a department so you can assign the correct role');
     }
 
-    if (resolvedDepartment) {
+    if (resolvedDepartment && role !== ROLES.SUPER_ADMIN) {
       departmentDoc = departmentDoc || (await Department.findById(resolvedDepartment));
       if (!departmentDoc) throw ApiError.notFound('Department not found');
 
@@ -355,6 +364,7 @@ class UserService {
     const inviter = await userRepository.findById(actor.id);
     const resolvedJobTitle =
       (jobTitle && String(jobTitle).trim()) ||
+      (role === ROLES.SUPER_ADMIN ? 'Super Admin' : null) ||
       getDefaultJobTitle(departmentDoc?.code, role) ||
       undefined;
 

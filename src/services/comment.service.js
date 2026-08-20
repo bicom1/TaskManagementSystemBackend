@@ -6,15 +6,25 @@ const ApiError = require('../utils/ApiError.util');
 const { NOTIFICATION_TYPES } = require('../constants/notification.constant');
 
 class CommentService {
-  async create({ taskId, content, mentions = [] }, actorId) {
+  async create(
+    { taskId, content = '', mentions = [], links = [], attachments = [] },
+    actorId
+  ) {
     const task = await taskRepository.findById(taskId);
     if (!task) throw ApiError.notFound('Task not found');
+
+    const trimmed = String(content || '').trim();
+    if (!trimmed && !(attachments || []).length && !(links || []).length) {
+      throw ApiError.badRequest('Add a message, link, or file to post a comment');
+    }
 
     const comment = await commentRepository.create({
       task: taskId,
       author: actorId,
-      content,
+      content: trimmed,
       mentions,
+      links: links || [],
+      attachments: attachments || [],
     });
 
     await activityService.record({

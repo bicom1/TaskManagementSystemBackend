@@ -65,7 +65,8 @@ function preferredFromAddress() {
 }
 
 function parseFromAddress(fromValue) {
-  let raw = fromValue || env.EMAIL_FROM || preferredFromAddress();
+  // Always strip Render/dashboard wrapping quotes first
+  let raw = cleanSecret(fromValue) || cleanSecret(env.EMAIL_FROM) || preferredFromAddress();
 
   // Render/shell often mangles unquoted EMAIL_FROM=Name <email> — recover from SMTP_USER
   if (LEGACY_FROM_RE.test(String(raw)) || !String(raw).includes('@')) {
@@ -79,7 +80,7 @@ function parseFromAddress(fromValue) {
   const match = String(raw).match(/^(.*)<([^>]+)>$/);
   if (match) {
     const email = match[2].trim();
-    const name = match[1].trim().replace(/^"|"$/g, '') || 'BIWORKSPACE';
+    const name = match[1].trim().replace(/^["']|["']$/g, '') || 'BIWORKSPACE';
     if (LEGACY_FROM_RE.test(email)) {
       return parseFromAddress(preferredFromAddress());
     }
@@ -370,6 +371,10 @@ async function sendViaSmtp({ to, subject, html, text, replyTo }) {
   if (Array.isArray(result?.rejected) && result.rejected.length > 0) {
     throw new Error(`Mail server rejected recipient: ${result.rejected.join(', ')}`);
   }
+
+  logger.info(
+    `SMTP accepted mail from=${from} to=${to} id=${result.messageId || 'n/a'} response=${result.response || 'ok'}`
+  );
 
   return {
     ...result,

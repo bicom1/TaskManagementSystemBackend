@@ -57,9 +57,11 @@ if (!storage) {
   logger.info('File uploads using local disk storage (./uploads)');
 }
 
+const { UPLOAD_MAX_BYTES } = require('../constants/chat.constant');
+
 const upload = multer({
   storage,
-  limits: { fileSize: 15 * 1024 * 1024 },
+  limits: { fileSize: UPLOAD_MAX_BYTES },
   fileFilter,
 });
 

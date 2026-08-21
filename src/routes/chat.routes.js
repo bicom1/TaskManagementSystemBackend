@@ -1,6 +1,7 @@
 const { Router } = require('express');
 const authenticate = require('../middlewares/auth.middleware');
 const validate = require('../middlewares/validate.middleware');
+const upload = require('../middlewares/upload.middleware');
 const controller = require('../controllers/chat.controller');
 const {
   startDmSchema,
@@ -9,9 +10,9 @@ const {
   startTaskSchema,
   sendChatMessageSchema,
 } = require('../validators/chat.validator');
+const { MAX_FILES_PER_MESSAGE } = require('../constants/chat.constant');
 
 const router = Router();
-// Chat is open to every authenticated user — no role/permission gates
 router.use(authenticate);
 
 router.get('/directory', controller.directory);
@@ -27,6 +28,8 @@ router.post('/task', validate(startTaskSchema), controller.startTaskChat);
 
 router.post(
   '/conversations/:id/messages',
+  upload.array('files', MAX_FILES_PER_MESSAGE),
+  controller.normalizeChatMessageBody,
   validate(sendChatMessageSchema),
   controller.sendMessage
 );

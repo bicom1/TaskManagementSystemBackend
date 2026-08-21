@@ -6,6 +6,14 @@ const Department = require('../models/department.model');
 const notificationService = require('./notification.service');
 const ApiError = require('../utils/ApiError.util');
 const { NOTIFICATION_TYPES } = require('../constants/notification.constant');
+const { ROLES } = require('../constants/roles.constant');
+const {
+  MAX_FILES_PER_MESSAGE,
+  MAX_LINKS_PER_MESSAGE,
+  IMAGE_MAX_BYTES,
+  DOCUMENT_MAX_BYTES,
+  IMAGE_MIME_TYPES,
+} = require('../constants/chat.constant');
 const { emitChatMessage, emitConversationUpdated } = require('../socket/socket');
 const env = require('../config/env');
 
@@ -34,12 +42,36 @@ function populateMessage(query) {
     .populate('to', 'name avatarUrl');
 }
 
+function isTeamMember(team, userId) {
+  const id = String(userId);
+  if (String(team.lead) === id) return true;
+  return (team.members || []).some((m) => String(m) === id);
+}
+
+function previewFromMessage({ text, attachments, shareLinks }) {
+  if (text) return text.slice(0, 240);
+  if ((attachments || []).length) {
+    const first = attachments[0];
+    const kind = String(first.fileType || '').startsWith('image/') ? 'image' : 'file';
+    return attachments.length > 1
+      ? `Shared ${attachments.length} ${kind === 'image' ? 'images' : 'files'}`
+      : `Shared ${kind}: ${first.fileName || 'attachment'}`;
+  }
+  if ((shareLinks || []).length) {
+    return `Shared a link: ${shareLinks[0].label || shareLinks[0].url}`.slice(0, 240);
+  }
+  return 'New message';
+}
+
 class ChatService {
   /**
-   * Open directory for chat UI — any authenticated user (no role gate).
+   * Directory for chat UI. Teams list is membership-scoped (plus SA sees all).
    */
-  async listDirectory() {
-    const [people, teams, departments] = await Promise.all([
+  async listDirectory(actorId) {
+    const actor = await User.findById(actorId).select('role').lean();
+    const isSuperAdmin = actor?.role === ROLES.SUPER_ADMIN;
+
+    const [people, allTeams, departments] = await Promise.all([
       User.find({ isActive: true })
         .select('name email avatarUrl jobTitle role department lastLoginAt')
         .populate('department', 'name code')
@@ -47,7 +79,7 @@ class ChatService {
         .limit(200)
         .lean(),
       Team.find({ isActive: true })
-        .select('name department lead')
+        .select('name department lead members')
         .populate('department', 'name code')
         .sort({ name: 1 })
         .lean(),
@@ -56,13 +88,24 @@ class ChatService {
         .sort({ name: 1 })
         .lean(),
     ]);
-    return { people, teams, departments };
+
+    const myTeams = allTeams.filter((t) => isTeamMember(t, actorId));
+    const teams = isSuperAdmin ? allTeams : myTeams;
+
+    return {
+      people,
+      teams,
+      myTeams,
+      departments,
+      limits: {
+        maxFiles: MAX_FILES_PER_MESSAGE,
+        maxLinks: MAX_LINKS_PER_MESSAGE,
+        imageMaxBytes: IMAGE_MAX_BYTES,
+        documentMaxBytes: DOCUMENT_MAX_BYTES,
+      },
+    };
   }
 
-  /**
-   * Search all active employees by name, email, job title, department, role.
-   * Open to every logged-in user — not role-scoped.
-   */
   async searchPeople(actorId, { q = '', department, role, limit = 30 } = {}) {
     const filter = {
       isActive: true,
@@ -177,18 +220,31 @@ class ChatService {
     return this.getConversation(conversation._id, actorId);
   }
 
+  async assertCanAccessTeamChat(actorId, team) {
+    const actor = await User.findById(actorId).select('role').lean();
+    if (actor?.role === ROLES.SUPER_ADMIN) return true;
+    if (isTeamMember(team, actorId)) return true;
+    throw ApiError.forbidden('Only team members and leads can open this team chat');
+  }
+
   async getOrCreateTeamChat(actorId, teamId) {
     const team = await Team.findById(teamId).lean();
     if (!team) throw ApiError.notFound('Team not found');
 
-    // Open chat: any logged-in user may join any team channel
+    await this.assertCanAccessTeamChat(actorId, team);
+
     const memberIds = [
       ...new Set(
-        [team.lead, ...(team.members || []), actorId]
+        [team.lead, ...(team.members || [])]
           .map((id) => String(id))
           .filter(Boolean)
       ),
     ];
+
+    // Super admin opening a team they are not on still joins so they can participate
+    if (!memberIds.includes(String(actorId))) {
+      memberIds.push(String(actorId));
+    }
 
     let conversation = await Conversation.findOne({ type: 'team', team: teamId, isActive: true });
     if (!conversation) {
@@ -196,7 +252,7 @@ class ChatService {
         type: 'team',
         team: teamId,
         department: team.department || null,
-        title: team.name,
+        title: `${team.name} · Team`,
         participants: memberIds,
         createdBy: actorId,
         readState: memberIds.map((id) => ({
@@ -208,18 +264,53 @@ class ChatService {
     } else {
       await Conversation.updateOne(
         { _id: conversation._id },
-        { $addToSet: { participants: { $each: memberIds } } }
+        {
+          $addToSet: { participants: { $each: memberIds } },
+          $set: { title: `${team.name} · Team` },
+        }
       );
     }
 
     return this.getConversation(conversation._id, actorId);
   }
 
+  /** Keep team conversation participants in sync when roster changes */
+  async syncTeamConversationParticipants(teamId) {
+    const team = await Team.findById(teamId).lean();
+    if (!team) return null;
+
+    const memberIds = [
+      ...new Set(
+        [team.lead, ...(team.members || [])].map((id) => String(id)).filter(Boolean)
+      ),
+    ];
+
+    const conversation = await Conversation.findOne({
+      type: 'team',
+      team: teamId,
+      isActive: true,
+    });
+    if (!conversation) return null;
+
+    conversation.participants = memberIds;
+    conversation.title = `${team.name} · Team`;
+    await conversation.save();
+    return conversation;
+  }
+
   async getOrCreateDepartmentChat(actorId, departmentId) {
     const dept = await Department.findById(departmentId).lean();
     if (!dept) throw ApiError.notFound('Department not found');
 
-    // Open chat: any logged-in user may join any department channel
+    const actor = await User.findById(actorId).select('role department').lean();
+    const isSuperAdmin = actor?.role === ROLES.SUPER_ADMIN;
+    const inDept =
+      String(actor?.department || '') === String(departmentId) ||
+      String(dept.head || '') === String(actorId);
+    if (!isSuperAdmin && !inDept) {
+      throw ApiError.forbidden('Only department members can open this channel');
+    }
+
     const people = await User.find({ isActive: true, department: departmentId })
       .select('_id')
       .lean();
@@ -238,7 +329,7 @@ class ChatService {
       conversation = await Conversation.create({
         type: 'department',
         department: departmentId,
-        title: dept.name,
+        title: `${dept.name} · Department`,
         participants: unique,
         createdBy: actorId,
         readState: unique.map((id) => ({
@@ -264,14 +355,9 @@ class ChatService {
       .lean();
     if (!task) throw ApiError.notFound('Task not found');
 
-    // Any logged-in user can join a task chat
     const participantIds = [
       ...new Set(
-        [
-          actorId,
-          task.reporter,
-          ...(task.assignees || []),
-        ]
+        [actorId, task.reporter, ...(task.assignees || [])]
           .map((id) => String(id?._id || id))
           .filter(Boolean)
       ),
@@ -307,26 +393,59 @@ class ChatService {
     return this.getConversation(conversation._id, actorId);
   }
 
-  async listMessages(conversationId, userId, { page = 1, limit = 50 } = {}) {
+  async listMessages(conversationId, userId, { page = 1, limit = 50, before } = {}) {
     await this.getConversation(conversationId, userId);
 
-    const skip = (page - 1) * limit;
     const filter = { conversation: conversationId, type: 'chat' };
+    if (before) {
+      const pivot = await Message.findById(before).select('createdAt').lean();
+      if (pivot?.createdAt) {
+        filter.createdAt = { $lt: pivot.createdAt };
+      }
+    }
 
     const [data, total] = await Promise.all([
       populateMessage(
-        Message.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit)
+        Message.find(filter).sort({ createdAt: -1 }).limit(limit)
       ).lean(),
-      Message.countDocuments(filter),
+      Message.countDocuments({ conversation: conversationId, type: 'chat' }),
     ]);
+
+    const hasMore = before
+      ? data.length === limit
+      : page * limit < total;
 
     return {
       data: data.reverse(),
-      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) || 1 },
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit) || 1,
+        hasMore,
+      },
     };
   }
 
-  async sendChatMessage(conversationId, actorId, { body, mentions = [], shareLinks = [] }) {
+  validateAttachmentSizes(attachments = []) {
+    for (const file of attachments) {
+      const size = Number(file.size) || 0;
+      const isImage = IMAGE_MIME_TYPES.includes(file.fileType);
+      const max = isImage ? IMAGE_MAX_BYTES : DOCUMENT_MAX_BYTES;
+      if (size > max) {
+        const mb = Math.round(max / (1024 * 1024));
+        throw ApiError.badRequest(
+          `${isImage ? 'Images' : 'Documents'} must be ${mb} MB or smaller (${file.fileName || 'file'})`
+        );
+      }
+    }
+  }
+
+  async sendChatMessage(
+    conversationId,
+    actorId,
+    { body, mentions = [], shareLinks = [], attachments = [] }
+  ) {
     const conversation = await Conversation.findById(conversationId);
     if (!conversation || !conversation.isActive) {
       throw ApiError.notFound('Conversation not found');
@@ -338,9 +457,14 @@ class ChatService {
     if (!isParticipant) throw ApiError.forbidden('You are not in this conversation');
 
     const text = String(body || '').trim();
-    if (!text && !(shareLinks || []).length) {
-      throw ApiError.badRequest('Message cannot be empty');
+    const files = (attachments || []).slice(0, MAX_FILES_PER_MESSAGE);
+    const links = (shareLinks || []).slice(0, MAX_LINKS_PER_MESSAGE);
+
+    if (!text && !files.length && !links.length) {
+      throw ApiError.badRequest('Add a message, file, or link');
     }
+
+    this.validateAttachmentSizes(files);
 
     const mentionIds = [...new Set((mentions || []).map(String))].filter((id) =>
       conversation.participants.some((p) => String(p) === id)
@@ -349,28 +473,41 @@ class ChatService {
     const message = await Message.create({
       from: actorId,
       conversation: conversationId,
-      body: text || (shareLinks?.[0]?.label || 'Shared a link'),
+      body: text || previewFromMessage({ text: '', attachments: files, shareLinks: links }),
       type: 'chat',
       subject: null,
       mentions: mentionIds,
-      shareLinks: (shareLinks || []).slice(0, 5).map((l) => ({
+      shareLinks: links.map((l) => ({
         url: l.url,
         label: l.label || '',
         kind: l.kind || 'external',
         refId: l.refId || null,
       })),
-      to: conversation.type === 'dm'
-        ? conversation.participants.find((p) => String(p) !== String(actorId))
-        : null,
+      attachments: files.map((f) => ({
+        url: f.url,
+        publicId: f.publicId || null,
+        fileName: f.fileName || '',
+        fileType: f.fileType || '',
+        size: f.size || 0,
+        uploadedBy: actorId,
+        uploadedAt: new Date(),
+      })),
+      to:
+        conversation.type === 'dm'
+          ? conversation.participants.find((p) => String(p) !== String(actorId))
+          : null,
       team: conversation.team || null,
       department: conversation.department || null,
     });
 
     conversation.lastMessageAt = new Date();
-    conversation.lastMessagePreview = text.slice(0, 240);
+    conversation.lastMessagePreview = previewFromMessage({
+      text,
+      attachments: files,
+      shareLinks: links,
+    });
     conversation.lastMessageBy = actorId;
 
-    // Mark sender as read; others unread
     const readState = conversation.readState || [];
     const senderState = readState.find((r) => String(r.user) === String(actorId));
     if (senderState) {
@@ -397,7 +534,6 @@ class ChatService {
       participantIds
     );
 
-    // Notify mentioned users + other participants (lightweight)
     const notifyTargets = new Set(mentionIds);
     for (const pid of participantIds) {
       if (pid !== String(actorId) && mentionIds.includes(pid)) {
@@ -409,19 +545,21 @@ class ChatService {
       [...notifyTargets]
         .filter((id) => id !== String(actorId))
         .map((recipientId) =>
-          notificationService.notify({
-            recipient: recipientId,
-            sender: actorId,
-            type: mentionIds.includes(recipientId)
-              ? NOTIFICATION_TYPES.MENTIONED
-              : NOTIFICATION_TYPES.MESSAGE_RECEIVED,
-            message: mentionIds.includes(recipientId)
-              ? `Mentioned you in chat: ${text.slice(0, 80)}`
-              : `New chat message: ${text.slice(0, 80)}`,
-            entityType: 'Comment',
-            entityId: message._id,
-            emailToo: false,
-          }).catch(() => {})
+          notificationService
+            .notify({
+              recipient: recipientId,
+              sender: actorId,
+              type: mentionIds.includes(recipientId)
+                ? NOTIFICATION_TYPES.MENTIONED
+                : NOTIFICATION_TYPES.MESSAGE_RECEIVED,
+              message: mentionIds.includes(recipientId)
+                ? `Mentioned you in chat: ${text.slice(0, 80) || 'attachment'}`
+                : `New chat message: ${text.slice(0, 80) || 'Shared a file'}`,
+              entityType: 'Comment',
+              entityId: message._id,
+              emailToo: false,
+            })
+            .catch(() => {})
         )
     );
 

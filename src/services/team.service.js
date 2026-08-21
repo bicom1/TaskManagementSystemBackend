@@ -172,6 +172,14 @@ class TeamService {
     // ClickUp-style: joining a team unlocks that team's projects
     await Project.updateMany({ team: teamId }, { $addToSet: { members: userId } });
 
+    // Keep team chat participants in sync
+    try {
+      const chatService = require('./chat.service');
+      await chatService.syncTeamConversationParticipants(teamId);
+    } catch {
+      /* non-fatal */
+    }
+
     const teamProjects = await Project.find({ team: teamId })
       .select('_id name owner members team')
       .lean();
@@ -242,6 +250,13 @@ class TeamService {
       { team: teamId, owner: { $ne: userId } },
       { $pull: { members: userId } }
     );
+
+    try {
+      const chatService = require('./chat.service');
+      await chatService.syncTeamConversationParticipants(teamId);
+    } catch {
+      /* non-fatal */
+    }
 
     let io = null;
     try {

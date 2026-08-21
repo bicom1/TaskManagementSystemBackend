@@ -1,4 +1,8 @@
 const { z } = require('zod');
+const {
+  MAX_LINKS_PER_MESSAGE,
+  MAX_FILES_PER_MESSAGE,
+} = require('../constants/chat.constant');
 
 const startDmSchema = z.object({
   body: z.object({
@@ -24,27 +28,23 @@ const startTaskSchema = z.object({
   }),
 });
 
+const shareLinkSchema = z.object({
+  url: z.string().trim().min(1).max(1000),
+  label: z.string().trim().max(200).optional(),
+  kind: z.enum(['task', 'project', 'conversation', 'external']).optional(),
+  refId: z.string().length(24).optional().nullable(),
+});
+
 const sendChatMessageSchema = z.object({
   body: z
     .object({
       body: z.string().trim().max(5000).optional().default(''),
       mentions: z.array(z.string().length(24)).optional(),
-      shareLinks: z
-        .array(
-          z.object({
-            url: z.string().trim().min(1).max(1000),
-            label: z.string().trim().max(200).optional(),
-            kind: z.enum(['task', 'project', 'conversation', 'external']).optional(),
-            refId: z.string().length(24).optional().nullable(),
-          })
-        )
-        .max(5)
-        .optional(),
+      shareLinks: z.array(shareLinkSchema).max(MAX_LINKS_PER_MESSAGE).optional(),
+      /** Present when files already uploaded client-side as JSON (rare); usually multer */
+      attachmentCount: z.coerce.number().int().min(0).max(MAX_FILES_PER_MESSAGE).optional(),
     })
-    .refine(
-      (data) => (data.body && data.body.trim().length > 0) || (data.shareLinks || []).length > 0,
-      { message: 'Message body or share link is required' }
-    ),
+    .passthrough(),
   params: z.object({
     id: z.string().length(24),
   }),

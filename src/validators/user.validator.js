@@ -3,7 +3,7 @@ const { z } = require('zod');
 const inviteUserSchema = z.object({
   body: z.object({
     email: z.string().trim().email('Enter a valid email'),
-    name: z.string().trim().min(2).max(100).optional(),
+    name: z.string().trim().min(2, 'Name must be at least 2 characters').max(100),
     role: z.enum(['super_admin', 'dept_head', 'team_lead', 'executive', 'employee']).optional(),
     jobTitle: z.string().trim().max(100).optional(),
     department: z.string().length(24).optional(),

@@ -8,6 +8,7 @@ const ApiError = require('../utils/ApiError.util');
 const { NOTIFICATION_TYPES } = require('../constants/notification.constant');
 const { ROLES } = require('../constants/roles.constant');
 const { PERMISSIONS, ACCESS } = require('../constants/permissions.constant');
+const { emitProjectEvent, getIO } = require('../socket/socket');
 
 async function resolveActor(actor) {
   if (actor?.context) return actor.context;
@@ -168,7 +169,41 @@ class TeamService {
       await userRepository.updateById(userId, { department: team.department });
     }
 
+    // ClickUp-style: joining a team unlocks that team's projects
     await Project.updateMany({ team: teamId }, { $addToSet: { members: userId } });
+
+    const teamProjects = await Project.find({ team: teamId })
+      .select('_id name owner members team')
+      .lean();
+
+    let io = null;
+    try {
+      io = getIO();
+    } catch {
+      io = null;
+    }
+    if (io) {
+      io.to(`user:${String(userId)}`).emit('team:member-added', {
+        teamId: String(teamId),
+        teamName: team.name,
+        projectIds: teamProjects.map((p) => String(p._id)),
+      });
+    }
+    for (const project of teamProjects) {
+      emitProjectEvent('project:updated', project, {
+        teamId,
+        ownerId: project.owner,
+        memberIds: [...(project.members || []).map(String), String(userId)],
+      });
+    }
+
+    const projectNames = teamProjects
+      .map((p) => p.name)
+      .filter(Boolean)
+      .slice(0, 5);
+    const projectHint = projectNames.length
+      ? ` Projects now visible: ${projectNames.join(', ')}${teamProjects.length > 5 ? '…' : ''}.`
+      : '';
 
     if (actorId && String(actorId) !== String(userId)) {
       await notificationService
@@ -176,9 +211,9 @@ class TeamService {
           recipient: userId,
           sender: actorId,
           type: NOTIFICATION_TYPES.PROJECT_INVITE,
-          message: `You were added to team "${team.name}"`,
+          message: `You were added to team "${team.name}".${projectHint}`,
           entityType: 'Project',
-          entityId: teamId,
+          entityId: teamProjects[0]?._id || teamId,
           emailToo: true,
         })
         .catch(() => {});
@@ -201,6 +236,25 @@ class TeamService {
 
     const team = await teamRepository.removeMember(teamId, userId);
     if (!team) throw ApiError.notFound('Team not found');
+
+    // Drop membership on team projects, but never remove the project owner
+    await Project.updateMany(
+      { team: teamId, owner: { $ne: userId } },
+      { $pull: { members: userId } }
+    );
+
+    let io = null;
+    try {
+      io = getIO();
+    } catch {
+      io = null;
+    }
+    if (io) {
+      io.to(`user:${String(userId)}`).emit('team:member-removed', {
+        teamId: String(teamId),
+      });
+    }
+
     return this.getById(teamId, actor);
   }
 }

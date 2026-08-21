@@ -89,10 +89,21 @@ class ProjectService {
     policy.assertPermission(actor, PERMISSIONS.PROJECT_CREATE);
 
     const team = await resolveTeamForCreate(actor, data.team);
+    // Reload with members so every teammate gets the new project (ClickUp-style)
+    const teamDoc = await teamRepository.findById(team._id, {
+      populate: [{ path: 'members', select: '_id' }, { path: 'lead', select: '_id' }],
+    });
     const template = getWorkflowTemplate(data.workflowTemplate || 'starter');
 
     const preferredKey = data.key || generateProjectKey(data.name);
     const key = await resolveUniqueKey(preferredKey);
+
+    const teamMemberIds = [
+      String(teamDoc?.lead?._id || teamDoc?.lead || team.lead || ''),
+      ...((teamDoc?.members || team.members || []).map((m) => String(m._id || m))),
+      ...(data.members || []).map(String),
+      String(data.owner || actor.id),
+    ].filter(Boolean);
 
     const payload = {
       name: data.name,
@@ -100,7 +111,7 @@ class ProjectService {
       description: data.description || '',
       team: team._id,
       owner: data.owner || actor.id,
-      members: data.members || [],
+      members: [...new Set(teamMemberIds)],
       status: 'active',
       startDate: data.startDate,
       endDate: data.endDate,
@@ -119,10 +130,6 @@ class ProjectService {
       clickApps: data.clickApps?.length ? data.clickApps : [...template.clickApps],
       activeView: data.activeView || template.defaultViews[0] || 'list',
     };
-
-    if (payload.isPrivate && !payload.members.map(String).includes(String(actor.id))) {
-      payload.members = [...new Set([...(payload.members || []).map(String), String(actor.id)])];
-    }
 
     const project = await projectRepository.create(payload);
 

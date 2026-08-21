@@ -12,6 +12,7 @@
     "seed": "node src/scripts/seed.js",
     "seed:super-admin": "node src/scripts/ensure-super-admin.js",
     "seed:key-accounts": "node src/scripts/ensure-key-accounts.js",
+    "sync:team-projects": "node src/scripts/sync-team-project-members.js",
     "prepare": "node -e \"try{require('husky').install()}catch(e){}\""
   },
   "dependencies": {

@@ -4,6 +4,7 @@ const userRepository = require('../repositories/user.repository');
 const ApiError = require('../utils/ApiError.util');
 const { DEFAULT_HOME_CARDS, HOME_CARD_META } = require('../constants/home.constant');
 const { NOTIFICATION_TYPES } = require('../constants/notification.constant');
+const { cacheOrFetch } = require('../config/redis');
 const {
   getUserWorkspace,
   getUpcomingMeetingsForUser,
@@ -50,6 +51,10 @@ const TASK_POPULATE = [
 
 class HomeService {
   async getOverview(userId) {
+    return cacheOrFetch(`home:overview:${userId}`, 20, () => this.#buildOverview(userId));
+  }
+
+  async #buildOverview(userId) {
     const user = await userRepository.findById(userId);
     if (!user) throw ApiError.notFound('User not found');
 
@@ -67,6 +72,7 @@ class HomeService {
       commentNotifs,
       meetings,
       locations,
+      doneToday,
     ] = await Promise.all([
       Task.find({
         assignees: uid,
@@ -76,6 +82,7 @@ class HomeService {
       })
         .sort({ dueDate: 1, updatedAt: -1 })
         .limit(25)
+        .select('key title status priority dueDate assignees reporter project updatedAt')
         .populate(TASK_POPULATE)
         .lean(),
 
@@ -87,6 +94,7 @@ class HomeService {
       })
         .sort({ updatedAt: -1 })
         .limit(15)
+        .select('key title status priority dueDate assignees reporter project updatedAt')
         .populate(TASK_POPULATE)
         .lean(),
 
@@ -99,6 +107,7 @@ class HomeService {
       })
         .sort({ dueDate: 1 })
         .limit(25)
+        .select('key title status priority dueDate assignees reporter project updatedAt')
         .populate(TASK_POPULATE)
         .lean(),
 
@@ -111,6 +120,7 @@ class HomeService {
       })
         .sort({ dueDate: 1 })
         .limit(20)
+        .select('key title status priority dueDate assignees reporter project updatedAt')
         .populate(TASK_POPULATE)
         .lean(),
 
@@ -123,6 +133,7 @@ class HomeService {
       })
         .sort({ priority: -1, dueDate: 1 })
         .limit(15)
+        .select('key title status priority dueDate assignees reporter project updatedAt')
         .populate(TASK_POPULATE)
         .lean(),
 
@@ -131,6 +142,7 @@ class HomeService {
             _id: { $in: prefs.personalList },
             isArchived: false,
           })
+            .select('key title status priority dueDate assignees reporter project updatedAt')
             .populate(TASK_POPULATE)
             .lean()
         : Promise.resolve([]),
@@ -141,11 +153,17 @@ class HomeService {
       })
         .sort({ createdAt: -1 })
         .limit(15)
+        .select('type message sender createdAt isRead entityId')
         .populate('sender', 'name avatarUrl')
         .lean(),
 
-      getUpcomingMeetingsForUser(uid, { limit: 15 }),
-      getLocationsForUser(uid),
+      getUpcomingMeetingsForUser(uid, { limit: 15, workspace }),
+      getLocationsForUser(uid, workspace),
+      Task.countDocuments({
+        assignees: uid,
+        status: 'done',
+        updatedAt: { $gte: startOfToday() },
+      }),
     ]);
 
     // Keep personal list order
@@ -165,12 +183,6 @@ class HomeService {
             projectId: p._id,
             at: p.updatedAt,
           }));
-
-    const doneToday = await Task.countDocuments({
-      assignees: uid,
-      status: 'done',
-      updatedAt: { $gte: startOfToday() },
-    });
 
     const aiStandup = {
       greeting: this.#greeting(),

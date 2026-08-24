@@ -93,7 +93,8 @@ const projectSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-projectSchema.index({ team: 1 });
+projectSchema.index({ team: 1, status: 1 });
+projectSchema.index({ members: 1 });
 projectSchema.index({ key: 1 }, { unique: true });
 projectSchema.index({ owner: 1 });
 

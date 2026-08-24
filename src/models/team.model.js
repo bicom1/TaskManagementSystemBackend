@@ -12,6 +12,8 @@ const teamSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-teamSchema.index({ department: 1 });
+teamSchema.index({ department: 1, isActive: 1 });
+teamSchema.index({ lead: 1 });
+teamSchema.index({ members: 1 });
 
 module.exports = mongoose.model('Team', teamSchema);

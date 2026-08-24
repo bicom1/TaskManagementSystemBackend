@@ -86,7 +86,9 @@ const taskSchema = new mongoose.Schema(
 
 taskSchema.index({ project: 1, status: 1, position: 1 });
 taskSchema.index({ parentTask: 1 });
-taskSchema.index({ assignees: 1 });
+taskSchema.index({ assignees: 1, isArchived: 1, status: 1, dueDate: 1 });
+taskSchema.index({ assignees: 1, status: 1, updatedAt: -1 });
+taskSchema.index({ project: 1, isArchived: 1, status: 1 });
 taskSchema.index({ approvalStatus: 1 });
 taskSchema.index({ title: 'text', description: 'text' });
 

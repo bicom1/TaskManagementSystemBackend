@@ -7,9 +7,29 @@ const logger = require('../config/logger');
 
 let io;
 
+function allowedOrigin(origin) {
+  const allowed = new Set([
+    env.CLIENT_URL,
+    'https://task-management-system-frontend-z23.vercel.app',
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+  ]);
+  const isVercelPreview =
+    typeof origin === 'string' &&
+    /^https:\/\/task-management-system-frontend[\w-]*\.vercel\.app$/i.test(origin);
+  return !origin || allowed.has(origin) || isVercelPreview;
+}
+
 function initSocket(httpServer) {
   io = new Server(httpServer, {
-    cors: { origin: env.CLIENT_URL, credentials: true },
+    cors: {
+      origin: (origin, cb) => cb(null, allowedOrigin(origin)),
+      credentials: true,
+    },
+    pingInterval: 25_000,
+    pingTimeout: 20_000,
+    maxHttpBufferSize: 1e6,
+    transports: ['websocket', 'polling'],
   });
 
   io.use((socket, next) => {

@@ -155,4 +155,7 @@ userSchema.methods.toSafeObject = function toSafeObject() {
   return obj;
 };
 
+userSchema.index({ department: 1, isActive: 1, name: 1 });
+userSchema.index({ isActive: 1, role: 1 });
+
 module.exports = mongoose.model('User', userSchema);

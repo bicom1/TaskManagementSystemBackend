@@ -48,8 +48,8 @@ async function getUserWorkspace(userId) {
   return { teams, teamIds, departmentIds, projects };
 }
 
-async function getUpcomingMeetingsForUser(userId, { limit = 20 } = {}) {
-  const { teamIds } = await getUserWorkspace(userId);
+async function getUpcomingMeetingsForUser(userId, { limit = 20, workspace } = {}) {
+  const { teamIds } = workspace || (await getUserWorkspace(userId));
   const now = new Date();
 
   return Meeting.find({
@@ -66,12 +66,13 @@ async function getUpcomingMeetingsForUser(userId, { limit = 20 } = {}) {
     .populate('team', 'name')
     .populate('location', 'name address city type')
     .populate('organizer', 'name avatarUrl')
-    .populate('attendees', 'name avatarUrl')
+    .select('title startsAt endsAt team location organizer attendees')
     .lean();
 }
 
-async function getLocationsForUser(userId) {
-  const { teamIds, departmentIds } = await getUserWorkspace(userId);
+async function getLocationsForUser(userId, workspace) {
+  const ws = workspace || (await getUserWorkspace(userId));
+  const { teamIds, departmentIds } = ws;
   const filter = {
     isActive: true,
     $or: [
@@ -81,7 +82,6 @@ async function getLocationsForUser(userId) {
     ],
   };
 
-  // Super admins see all
   const User = require('../models/user.model');
   const user = await User.findById(userId).select('role').lean();
   if (user?.role === ROLES.SUPER_ADMIN) {
@@ -89,6 +89,7 @@ async function getLocationsForUser(userId) {
       .populate('team', 'name')
       .populate('department', 'name')
       .sort({ name: 1 })
+      .select('name address city type team department')
       .lean();
   }
 
@@ -96,6 +97,7 @@ async function getLocationsForUser(userId) {
     .populate('team', 'name')
     .populate('department', 'name')
     .sort({ name: 1 })
+    .select('name address city type team department')
     .lean();
 }
 

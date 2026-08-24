@@ -51,7 +51,12 @@ app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser(env.COOKIE_SECRET));
 app.use(mongoSanitize());
-app.use(morgan(env.NODE_ENV === 'production' ? 'combined' : 'dev', { stream: { write: (msg) => logger.http(msg.trim()) } }));
+app.use(
+  morgan(env.NODE_ENV === 'production' ? 'combined' : 'dev', {
+    skip: (req) => req.path === '/health' || req.path === '/',
+    stream: { write: (msg) => logger.http(msg.trim()) },
+  })
+);
 
 // Global rate limit as a baseline; auth routes layer a tighter one on top
 app.use(
@@ -81,7 +86,9 @@ app.head('/', (req, res) => res.sendStatus(200));
 
 app.use('/uploads', express.static(require('path').join(process.cwd(), 'uploads')));
 
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+if (env.NODE_ENV !== 'production') {
+  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+}
 app.use('/api/v1', routes);
 
 app.use((req, res, next) => {

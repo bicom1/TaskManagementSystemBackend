@@ -15,9 +15,31 @@ if (redisEnabled && env.UPSTASH_REDIS_REST_URL && env.UPSTASH_REDIS_REST_TOKEN) 
   });
   logger.info('Upstash REST client initialized');
 } else if (redisEnabled) {
-  logger.warn('Redis enabled but UPSTASH_REDIS_REST_URL/TOKEN missing — cache disabled');
+  logger.warn('Redis enabled but UPSTASH_REDIS_REST_URL/TOKEN missing — using memory cache');
 } else {
-  logger.info('Redis disabled');
+  logger.info('Redis disabled — using in-process memory cache');
+}
+
+/** Local + live fallback when Upstash is off (Render cold starts still benefit). */
+const memoryCache = new Map();
+const MEMORY_MAX = 500;
+
+function memoryGet(key) {
+  const hit = memoryCache.get(key);
+  if (!hit) return undefined;
+  if (Date.now() > hit.exp) {
+    memoryCache.delete(key);
+    return undefined;
+  }
+  return hit.value;
+}
+
+function memorySet(key, value, ttlSeconds) {
+  if (memoryCache.size > MEMORY_MAX) {
+    const first = memoryCache.keys().next().value;
+    memoryCache.delete(first);
+  }
+  memoryCache.set(key, { value, exp: Date.now() + ttlSeconds * 1000 });
 }
 
 async function verifyRedisConnection() {
@@ -34,10 +56,13 @@ async function cacheOrFetch(key, ttlSeconds, fetcher) {
   if (redis) {
     try {
       const cached = await redis.get(key);
-      if (cached) return cached;
+      if (cached != null) return cached;
     } catch (err) {
       logger.warn(`Cache read failed: ${err.message}`);
     }
+  } else {
+    const mem = memoryGet(key);
+    if (mem !== undefined) return mem;
   }
 
   const fresh = await fetcher();
@@ -48,12 +73,17 @@ async function cacheOrFetch(key, ttlSeconds, fetcher) {
     } catch (err) {
       logger.warn(`Cache write failed: ${err.message}`);
     }
+  } else {
+    memorySet(key, fresh, ttlSeconds);
   }
 
   return fresh;
 }
 
 async function invalidateByPrefix(prefix) {
+  for (const key of [...memoryCache.keys()]) {
+    if (String(key).startsWith(prefix)) memoryCache.delete(key);
+  }
   if (!redis) return;
   try {
     let cursor = '0';

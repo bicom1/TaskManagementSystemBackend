@@ -30,4 +30,23 @@ async function completionTrend(req, res) {
   res.status(httpStatus.StatusCodes.OK).json({ success: true, data: trend });
 }
 
-module.exports = { workspaceOverview, projectSummary, teamWorkload, completionTrend };
+async function workloadAnalytics(req, res) {
+  const data = await reportService.workloadAnalytics(actorFrom(req), {
+    period: req.query.period,
+    from: req.query.from,
+    to: req.query.to,
+    userId: req.query.userId,
+    teamId: req.query.teamId,
+    departmentId: req.query.departmentId,
+    projectId: req.query.projectId,
+  });
+  res.status(httpStatus.StatusCodes.OK).json({ success: true, data });
+}
+
+module.exports = {
+  workspaceOverview,
+  projectSummary,
+  teamWorkload,
+  completionTrend,
+  workloadAnalytics,
+};

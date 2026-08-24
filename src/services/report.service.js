@@ -318,6 +318,278 @@ class ReportService {
       };
     });
   }
+
+  resolveAnalyticsRange(period = 'weekly', from, to) {
+    const end = to ? new Date(to) : new Date();
+    if (Number.isNaN(end.getTime())) throw ApiError.badRequest('Invalid end date');
+    end.setHours(23, 59, 59, 999);
+
+    const start = new Date(end);
+    if (period === 'custom') {
+      if (!from) throw ApiError.badRequest('Start date is required for a custom range');
+      const customStart = new Date(from);
+      if (Number.isNaN(customStart.getTime())) throw ApiError.badRequest('Invalid start date');
+      customStart.setHours(0, 0, 0, 0);
+      if (customStart > end) throw ApiError.badRequest('Start date must be before end date');
+      return { start: customStart, end, period: 'custom' };
+    }
+    if (period === 'daily') {
+      start.setHours(0, 0, 0, 0);
+    } else if (period === 'monthly') {
+      start.setDate(1);
+      start.setHours(0, 0, 0, 0);
+    } else {
+      start.setDate(start.getDate() - 6);
+      start.setHours(0, 0, 0, 0);
+    }
+    return { start, end, period: period === 'monthly' ? 'monthly' : period === 'daily' ? 'daily' : 'weekly' };
+  }
+
+  /**
+   * Role-based workload analytics. Super Admin may filter org-wide.
+   * Other roles only see their relevant slice (self / team / department).
+   */
+  async workloadAnalytics(actorInput, query = {}) {
+    const actor = actorInput?.context || actorInput;
+    const ctx = actor?.permissions ? actor : await policy.buildActorContext(actor.id);
+    policy.assertPermission(ctx, PERMISSIONS.REPORT_VIEW);
+
+    const { start, end, period } = this.resolveAnalyticsRange(
+      query.period,
+      query.from,
+      query.to
+    );
+    const isSuperAdmin = ctx.role === ROLES.SUPER_ADMIN;
+    const now = new Date();
+
+    const projectFilter = await policy.projectListFilter(ctx);
+    let visibleProjects = await Project.find(projectFilter)
+      .select('_id name key team')
+      .populate('team', 'name department')
+      .lean();
+
+    if (query.projectId && isSuperAdmin) {
+      visibleProjects = visibleProjects.filter((p) => String(p._id) === String(query.projectId));
+    }
+    if (query.teamId && isSuperAdmin) {
+      visibleProjects = visibleProjects.filter(
+        (p) => String(p.team?._id || p.team) === String(query.teamId)
+      );
+    }
+    if (query.departmentId && isSuperAdmin) {
+      visibleProjects = visibleProjects.filter(
+        (p) => String(p.team?.department) === String(query.departmentId)
+      );
+    }
+
+    const projectIds = visibleProjects.map((p) => p._id);
+    const taskMatch = {
+      isArchived: false,
+      project: { $in: projectIds.length ? projectIds : [] },
+    };
+
+    const userFilter = { isActive: true };
+    if (!isSuperAdmin) {
+      if (ctx.role === ROLES.DEPT_HEAD && (ctx.headedDepartmentIds || []).length) {
+        userFilter.department = { $in: ctx.headedDepartmentIds };
+      } else if (ctx.role === ROLES.TEAM_LEAD && (ctx.ledTeamIds || []).length) {
+        const led = await Team.find({ _id: { $in: ctx.ledTeamIds } })
+          .select('lead members')
+          .lean();
+        const ids = new Set([String(ctx.id)]);
+        for (const t of led) {
+          if (t.lead) ids.add(String(t.lead));
+          for (const m of t.members || []) ids.add(String(m));
+        }
+        userFilter._id = { $in: [...ids] };
+      } else {
+        userFilter._id = ctx.id;
+      }
+    } else if (query.userId) {
+      userFilter._id = query.userId;
+    } else if (query.departmentId) {
+      userFilter.department = query.departmentId;
+    }
+
+    const people = await User.find(userFilter)
+      .select('name email role jobTitle avatarUrl department')
+      .populate('department', 'name code')
+      .sort({ name: 1 })
+      .limit(300)
+      .lean();
+
+    const peopleIds = people.map((p) => p._id);
+    if (peopleIds.length) {
+      taskMatch.assignees = { $in: peopleIds };
+    } else {
+      taskMatch.assignees = { $in: [] };
+    }
+
+    const tasks = await Task.find(taskMatch)
+      .select('title key status priority dueDate assignees project updatedAt createdAt approvalStatus')
+      .populate('assignees', 'name')
+      .populate({ path: 'project', select: 'name key team', populate: { path: 'team', select: 'name department' } })
+      .lean();
+
+    const personStats = new Map(
+      people.map((p) => [
+        String(p._id),
+        {
+          userId: String(p._id),
+          name: p.name,
+          email: p.email,
+          role: p.role,
+          jobTitle: p.jobTitle || '',
+          department: p.department?.name || '',
+          assigned: 0,
+          completed: 0,
+          pending: 0,
+          overdue: 0,
+          inProgress: 0,
+          projects: new Set(),
+          workload: 0,
+        },
+      ])
+    );
+
+    const projectStats = new Map();
+    const teamStats = new Map();
+    const trendMap = new Map();
+    const cursor = new Date(start);
+    cursor.setHours(12, 0, 0, 0);
+    const endNoon = new Date(end);
+    endNoon.setHours(12, 0, 0, 0);
+    while (cursor <= endNoon) {
+      const key = cursor.toISOString().slice(0, 10);
+      trendMap.set(key, { date: key, completed: 0, created: 0 });
+      cursor.setDate(cursor.getDate() + 1);
+    }
+
+    const dayKey = (d) => new Date(d).toISOString().slice(0, 10);
+    const PRIORITY_WEIGHT = { low: 1, medium: 2, high: 3, urgent: 4 };
+
+    for (const task of tasks) {
+      const assigneeIds = (task.assignees || []).map((a) => String(a._id || a));
+      const isDone = task.status === 'done';
+      const isOverdue =
+        !isDone && task.dueDate && new Date(task.dueDate) < now;
+      const inRangeUpdated = task.updatedAt && new Date(task.updatedAt) >= start && new Date(task.updatedAt) <= end;
+      const inRangeCreated = task.createdAt && new Date(task.createdAt) >= start && new Date(task.createdAt) <= end;
+
+      if (isDone && inRangeUpdated) {
+        const bucket = trendMap.get(dayKey(task.updatedAt));
+        if (bucket) bucket.completed += 1;
+      }
+      if (inRangeCreated) {
+        const bucket = trendMap.get(dayKey(task.createdAt));
+        if (bucket) bucket.created += 1;
+      }
+
+      const pid = String(task.project?._id || task.project || '');
+      if (pid) {
+        const row = projectStats.get(pid) || {
+          projectId: pid,
+          name: task.project?.name || 'Project',
+          key: task.project?.key || '',
+          assigned: 0,
+          completed: 0,
+          overdue: 0,
+          inProgress: 0,
+        };
+        row.assigned += 1;
+        if (isDone && inRangeUpdated) row.completed += 1;
+        if (isOverdue) row.overdue += 1;
+        if (task.status === 'in_progress') row.inProgress += 1;
+        projectStats.set(pid, row);
+      }
+
+      const teamId = String(task.project?.team?._id || task.project?.team || '');
+      if (teamId) {
+        const trow = teamStats.get(teamId) || {
+          teamId,
+          completed: 0,
+          created: 0,
+          open: 0,
+        };
+        if (isDone && inRangeUpdated) trow.completed += 1;
+        if (inRangeCreated) trow.created += 1;
+        if (!isDone) trow.open += 1;
+        teamStats.set(teamId, trow);
+      }
+
+      for (const aid of assigneeIds) {
+        const row = personStats.get(aid);
+        if (!row) continue;
+        row.assigned += 1;
+        if (pid) row.projects.add(pid);
+        if (isDone && inRangeUpdated) row.completed += 1;
+        if (!isDone) {
+          row.workload += PRIORITY_WEIGHT[task.priority] || 2;
+          if (task.status === 'in_progress') row.inProgress += 1;
+          else row.pending += 1;
+          if (isOverdue) row.overdue += 1;
+        }
+      }
+    }
+
+    const teams = await Team.find({
+      _id: { $in: [...teamStats.keys()].filter((id) => id && id.length === 24) },
+    })
+      .select('name department')
+      .populate('department', 'name')
+      .lean();
+    const teamName = Object.fromEntries(
+      teams.map((t) => [String(t._id), { name: t.name, department: t.department?.name || '' }])
+    );
+
+    const peopleRows = [...personStats.values()]
+      .map((row) => ({
+        ...row,
+        projects: row.projects.size,
+        productivity:
+          row.assigned > 0 ? Math.round((row.completed / Math.max(row.assigned, 1)) * 100) : 0,
+      }))
+      .sort((a, b) => b.workload - a.workload || b.assigned - a.assigned);
+
+    const summary = peopleRows.reduce(
+      (acc, row) => {
+        acc.assigned += row.assigned;
+        acc.completed += row.completed;
+        acc.pending += row.pending;
+        acc.overdue += row.overdue;
+        acc.inProgress += row.inProgress;
+        acc.workload += row.workload;
+        return acc;
+      },
+      { assigned: 0, completed: 0, pending: 0, overdue: 0, inProgress: 0, workload: 0 }
+    );
+    summary.people = peopleRows.length;
+    summary.projects = projectStats.size;
+    summary.completionRate = summary.assigned
+      ? Math.round((summary.completed / summary.assigned) * 100)
+      : 0;
+
+    return {
+      period,
+      range: { from: start.toISOString(), to: end.toISOString() },
+      scope: {
+        role: ctx.role,
+        canFilterOrg: isSuperAdmin,
+      },
+      summary,
+      people: peopleRows,
+      projects: [...projectStats.values()].sort((a, b) => b.assigned - a.assigned).slice(0, 20),
+      teams: [...teamStats.entries()]
+        .map(([id, row]) => ({
+          ...row,
+          name: teamName[id]?.name || 'Team',
+          department: teamName[id]?.department || '',
+        }))
+        .sort((a, b) => b.completed - a.completed)
+        .slice(0, 20),
+      trend: [...trendMap.values()],
+    };
+  }
 }
 
 module.exports = new ReportService();

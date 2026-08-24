@@ -28,5 +28,10 @@ router.get(
   requirePermission(PERMISSIONS.REPORT_VIEW),
   controller.completionTrend
 );
+router.get(
+  '/analytics',
+  requirePermission(PERMISSIONS.REPORT_VIEW),
+  controller.workloadAnalytics
+);
 
 module.exports = router;

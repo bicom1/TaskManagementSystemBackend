@@ -267,34 +267,11 @@ function canViewResource(access) {
  * Mongo filter for listing users visible to actor.
  */
 function userListFilter(actor) {
+  // Assignment is org-wide: every role can pick any active colleague (any department).
   if (actor.role === ROLES.SUPER_ADMIN) {
     return {};
   }
-
-  if (actor.role === ROLES.DEPT_HEAD) {
-    // Can see everyone (cross-dept view) but manage only own dept — list all active
-    return { isActive: true };
-  }
-
-  if (actor.role === ROLES.TEAM_LEAD) {
-    return {
-      isActive: true,
-      $or: [
-        { department: actor.departmentId },
-        { department: { $in: actor.teamDepartmentIds || [] } },
-        { _id: { $in: [] } }, // filled below with team members via caller if needed
-      ],
-    };
-  }
-
-  // Employees: peers in same teams/department
-  return {
-    isActive: true,
-    $or: [
-      ...(actor.departmentId ? [{ department: actor.departmentId }] : []),
-      { _id: actor.id },
-    ],
-  };
+  return { isActive: true };
 }
 
 /**

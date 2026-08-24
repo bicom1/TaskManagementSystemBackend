@@ -134,30 +134,6 @@ class UserService {
     if (department) filter.department = department;
     if (role) filter.role = role;
 
-    // Team leads: also include members of teams they lead
-    if (actor.role === ROLES.TEAM_LEAD && (actor.ledTeamIds || []).length) {
-      const teams = await teamRepository.findPaginated(
-        { _id: { $in: actor.ledTeamIds } },
-        { page: 1, limit: 100 }
-      );
-      const memberIds = new Set();
-      for (const t of teams.data || []) {
-        if (t.lead) memberIds.add(String(t.lead._id || t.lead));
-        for (const m of t.members || []) memberIds.add(String(m._id || m));
-      }
-      filter = {
-        $and: [
-          filter,
-          {
-            $or: [
-              { department: { $in: actor.teamDepartmentIds || [] } },
-              { _id: { $in: [...memberIds] } },
-            ],
-          },
-        ],
-      };
-    }
-
     return userRepository.findPaginated(filter, { page, limit });
   }
 

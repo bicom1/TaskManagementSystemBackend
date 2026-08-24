@@ -3,7 +3,7 @@ const userService = require('../services/user.service');
 
 async function list(req, res) {
   const page = Number(req.query.page) || 1;
-  const limit = Math.min(Number(req.query.limit) || 50, 100);
+  const limit = Math.min(Number(req.query.limit) || 50, 200);
   const actor = req.user.context || req.user;
   const result = await userService.list(actor, {
     page,

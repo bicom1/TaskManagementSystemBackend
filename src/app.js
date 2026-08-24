@@ -1,4 +1,4 @@
-require('express-async-errors'); // must be required before routes are loaded
+require('express-async-errors');
 
 const express = require('express');
 const helmet = require('helmet');

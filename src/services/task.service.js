@@ -60,10 +60,10 @@ class TaskService {
       initialStatus = TASK_STATUS.TODO;
     }
 
-    // Only manage-level actors can assign others freely
-    if (data.assignees?.length && projectAccess !== ACCESS.MANAGE && !autoApprove) {
+    // Any role with TASK_ASSIGN may assign to colleagues in any department.
+    if (data.assignees?.length && !policy.hasPermission(actor, PERMISSIONS.TASK_ASSIGN)) {
       const onlySelf = data.assignees.every((a) => String(a) === String(actorId));
-      if (!onlySelf && !policy.hasPermission(actor, PERMISSIONS.TASK_ASSIGN)) {
+      if (!onlySelf) {
         throw ApiError.forbidden('You cannot assign tasks to other users');
       }
     }
@@ -318,21 +318,15 @@ class TaskService {
     const project = existing.project;
     policy.assertTaskManage(actor, existing, project);
 
-    const projectAccess = policy.getProjectAccess(actor, project);
+    // Any role with TASK_ASSIGN may reassign across departments.
 
-    // Dept heads may edit/reassign across departments they can view (SEO Head → Dev/Designing).
-    // Delete remains blocked unless project MANAGE (own department) — see delete().
-
-    // Reassign requires TASK_ASSIGN when not project manage
-    if (projectAccess !== ACCESS.MANAGE) {
-      if (updates.assignees !== undefined && !policy.hasPermission(actor, PERMISSIONS.TASK_ASSIGN)) {
-        const next = (updates.assignees || []).map(String);
-        const prev = (existing.assignees || []).map((a) => String(a._id || a));
-        const changed =
-          next.length !== prev.length || next.some((id) => !prev.includes(id));
-        if (changed) {
-          throw ApiError.forbidden('You cannot reassign this task');
-        }
+    if (updates.assignees !== undefined && !policy.hasPermission(actor, PERMISSIONS.TASK_ASSIGN)) {
+      const next = (updates.assignees || []).map(String);
+      const prev = (existing.assignees || []).map((a) => String(a._id || a));
+      const changed =
+        next.length !== prev.length || next.some((id) => !prev.includes(id));
+      if (changed) {
+        throw ApiError.forbidden('You cannot reassign this task');
       }
     }
 

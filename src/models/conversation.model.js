@@ -8,10 +8,9 @@ const conversationSchema = new mongoose.Schema(
       default: 'dm',
       required: true,
     },
-    /** Sorted "userIdA:userIdB" for unique 1:1 DMs */
+    /** Sorted "userIdA:userIdB" for unique 1:1 DMs — omit entirely on group chats */
     dmKey: {
       type: String,
-      default: null,
       sparse: true,
       unique: true,
     },
@@ -44,7 +43,7 @@ const conversationSchema = new mongoose.Schema(
 );
 
 conversationSchema.index({ participants: 1, lastMessageAt: -1 });
-conversationSchema.index({ type: 1, team: 1 });
+conversationSchema.index({ type: 1, team: 1, isActive: 1 });
 conversationSchema.index({ type: 1, department: 1 });
 conversationSchema.index({ relatedTask: 1 });
 

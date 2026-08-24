@@ -21,6 +21,22 @@ function dmKeyFor(userA, userB) {
   return [String(userA), String(userB)].sort().join(':');
 }
 
+function uniqueIds(ids) {
+  return [...new Set((ids || []).map((id) => String(id?._id || id)).filter(Boolean))];
+}
+
+function uniqueById(rows, getId) {
+  const seen = new Set();
+  const out = [];
+  for (const row of rows || []) {
+    const id = getId(row);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(row);
+  }
+  return out;
+}
+
 function populateConversation(query) {
   return query
     .populate({
@@ -89,14 +105,17 @@ class ChatService {
         .lean(),
     ]);
 
-    const myTeams = allTeams.filter((t) => isTeamMember(t, actorId));
-    const teams = isSuperAdmin ? allTeams : myTeams;
+    const myTeams = uniqueById(
+      allTeams.filter((t) => isTeamMember(t, actorId)),
+      (t) => String(t._id)
+    );
+    const teams = uniqueById(isSuperAdmin ? allTeams : myTeams, (t) => String(t._id));
 
     return {
-      people,
+      people: uniqueById(people, (p) => String(p._id)),
       teams,
       myTeams,
-      departments,
+      departments: uniqueById(departments, (d) => String(d._id)),
       limits: {
         maxFiles: MAX_FILES_PER_MESSAGE,
         maxLinks: MAX_LINKS_PER_MESSAGE,
@@ -153,7 +172,11 @@ class ChatService {
       Conversation.countDocuments(filter),
     ]);
 
-    const data = rows.map((c) => {
+    const data = uniqueById(rows, (c) => {
+      if (c.type === 'team') return `team:${String(c.team?._id || c.team || c._id)}`;
+      if (c.type === 'department') return `dept:${String(c.department?._id || c.department || c._id)}`;
+      return String(c._id);
+    }).map((c) => {
       const read = (c.readState || []).find((r) => String(r.user) === String(userId));
       const lastReadAt = read?.lastReadAt ? new Date(read.lastReadAt) : new Date(0);
       const unread =
@@ -162,6 +185,7 @@ class ChatService {
           : false;
       return {
         ...c,
+        participants: uniqueById(c.participants || [], (p) => String(p._id || p)),
         unread,
         shareUrl: `${env.CLIENT_URL}/inbox?chat=${c._id}`,
       };
@@ -188,6 +212,7 @@ class ChatService {
 
     return {
       ...conversation,
+      participants: uniqueById(conversation.participants || [], (p) => String(p._id || p)),
       shareUrl: `${env.CLIENT_URL}/inbox?chat=${conversation._id}`,
     };
   }
@@ -227,48 +252,84 @@ class ChatService {
     throw ApiError.forbidden('Only team members and leads can open this team chat');
   }
 
+  async stripGroupChatDmKeys() {
+    await Conversation.updateMany(
+      { type: { $in: ['team', 'department', 'task'] }, dmKey: { $ne: null } },
+      { $unset: { dmKey: 1 } }
+    );
+    await Conversation.updateMany(
+      { type: { $in: ['team', 'department', 'task'] }, dmKey: null },
+      { $unset: { dmKey: 1 } }
+    );
+  }
+
+  async collapseDuplicateTeamChats(teamId) {
+    const convos = await Conversation.find({
+      type: 'team',
+      team: teamId,
+    }).sort({ isActive: -1, createdAt: 1 });
+    if (!convos.length) return null;
+
+    const keep = convos[0];
+    const extras = convos.slice(1);
+    if (extras.length) {
+      const extraIds = extras.map((c) => c._id);
+      await Message.updateMany(
+        { conversation: { $in: extraIds } },
+        { $set: { conversation: keep._id } }
+      );
+      await Conversation.updateMany(
+        { _id: { $in: extraIds } },
+        { $set: { isActive: false } }
+      );
+    }
+    if (!keep.isActive) {
+      keep.isActive = true;
+      await keep.save();
+    }
+    return keep;
+  }
+
   async getOrCreateTeamChat(actorId, teamId) {
     const team = await Team.findById(teamId).lean();
     if (!team) throw ApiError.notFound('Team not found');
 
     await this.assertCanAccessTeamChat(actorId, team);
+    await this.stripGroupChatDmKeys();
 
-    const memberIds = [
-      ...new Set(
-        [team.lead, ...(team.members || [])]
-          .map((id) => String(id))
-          .filter(Boolean)
-      ),
-    ];
+    const memberIds = uniqueIds([team.lead, ...(team.members || []), actorId]);
 
-    // Super admin opening a team they are not on still joins so they can participate
-    if (!memberIds.includes(String(actorId))) {
-      memberIds.push(String(actorId));
-    }
-
-    let conversation = await Conversation.findOne({ type: 'team', team: teamId, isActive: true });
+    let conversation = await this.collapseDuplicateTeamChats(teamId);
     if (!conversation) {
-      conversation = await Conversation.create({
-        type: 'team',
-        team: teamId,
-        department: team.department || null,
-        title: `${team.name} · Team`,
-        participants: memberIds,
-        createdBy: actorId,
-        readState: memberIds.map((id) => ({
-          user: id,
-          lastReadAt: id === String(actorId) ? new Date() : new Date(0),
-        })),
-        lastMessagePreview: 'Team chat started',
-      });
+      try {
+        conversation = await Conversation.create({
+          type: 'team',
+          team: teamId,
+          department: team.department || null,
+          title: `${team.name} · Team`,
+          participants: memberIds,
+          createdBy: actorId,
+          readState: memberIds.map((id) => ({
+            user: id,
+            lastReadAt: id === String(actorId) ? new Date() : new Date(0),
+          })),
+          lastMessagePreview: 'Team chat started',
+        });
+        await Conversation.updateOne({ _id: conversation._id }, { $unset: { dmKey: 1 } });
+      } catch (err) {
+        if (err?.code !== 11000) throw err;
+        conversation = await this.collapseDuplicateTeamChats(teamId);
+        if (!conversation) throw err;
+      }
     } else {
-      await Conversation.updateOne(
-        { _id: conversation._id },
-        {
-          $addToSet: { participants: { $each: memberIds } },
-          $set: { title: `${team.name} · Team` },
-        }
-      );
+      conversation.participants = uniqueIds([
+        ...(conversation.participants || []),
+        ...memberIds,
+      ]);
+      conversation.title = `${team.name} · Team`;
+      conversation.isActive = true;
+      if (conversation.dmKey != null) conversation.dmKey = undefined;
+      await conversation.save();
     }
 
     return this.getConversation(conversation._id, actorId);
@@ -279,17 +340,8 @@ class ChatService {
     const team = await Team.findById(teamId).lean();
     if (!team) return null;
 
-    const memberIds = [
-      ...new Set(
-        [team.lead, ...(team.members || [])].map((id) => String(id)).filter(Boolean)
-      ),
-    ];
-
-    const conversation = await Conversation.findOne({
-      type: 'team',
-      team: teamId,
-      isActive: true,
-    });
+    const memberIds = uniqueIds([team.lead, ...(team.members || [])]);
+    const conversation = await this.collapseDuplicateTeamChats(teamId);
     if (!conversation) return null;
 
     conversation.participants = memberIds;
@@ -311,6 +363,8 @@ class ChatService {
       throw ApiError.forbidden('Only department members can open this channel');
     }
 
+    await this.stripGroupChatDmKeys();
+
     const people = await User.find({ isActive: true, department: departmentId })
       .select('_id')
       .lean();
@@ -322,28 +376,41 @@ class ChatService {
     let conversation = await Conversation.findOne({
       type: 'department',
       department: departmentId,
-      isActive: true,
-    });
+    }).sort({ isActive: -1, createdAt: 1 });
 
     if (!conversation) {
-      conversation = await Conversation.create({
-        type: 'department',
-        department: departmentId,
-        title: `${dept.name} · Department`,
-        participants: unique,
-        createdBy: actorId,
-        readState: unique.map((id) => ({
-          user: id,
-          lastReadAt: id === String(actorId) ? new Date() : new Date(0),
-        })),
-        lastMessagePreview: 'Department chat started',
-      });
-    } else {
-      await Conversation.updateOne(
-        { _id: conversation._id },
-        { $addToSet: { participants: { $each: unique } } }
-      );
+      try {
+        conversation = await Conversation.create({
+          type: 'department',
+          department: departmentId,
+          title: `${dept.name} · Department`,
+          participants: unique,
+          createdBy: actorId,
+          readState: unique.map((id) => ({
+            user: id,
+            lastReadAt: id === String(actorId) ? new Date() : new Date(0),
+          })),
+          lastMessagePreview: 'Department chat started',
+        });
+        await Conversation.updateOne({ _id: conversation._id }, { $unset: { dmKey: 1 } });
+      } catch (err) {
+        if (err?.code !== 11000) throw err;
+        conversation = await Conversation.findOne({
+          type: 'department',
+          department: departmentId,
+        }).sort({ createdAt: 1 });
+        if (!conversation) throw err;
+      }
     }
+
+    await Conversation.updateOne(
+      { _id: conversation._id },
+      {
+        $addToSet: { participants: { $each: unique } },
+        $set: { isActive: true, title: `${dept.name} · Department` },
+        $unset: { dmKey: 1 },
+      }
+    );
 
     return this.getConversation(conversation._id, actorId);
   }

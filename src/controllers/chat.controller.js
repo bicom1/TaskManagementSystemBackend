@@ -94,6 +94,11 @@ async function startTaskChat(req, res) {
   res.status(httpStatus.StatusCodes.OK).json({ success: true, data });
 }
 
+async function startProjectChat(req, res) {
+  const data = await chatService.getOrCreateProjectChat(req.user.id, req.body.projectId);
+  res.status(httpStatus.StatusCodes.OK).json({ success: true, data });
+}
+
 async function listMessages(req, res) {
   const page = Number(req.query.page) || 1;
   const limit = Math.min(Number(req.query.limit) || 50, 100);
@@ -148,6 +153,7 @@ module.exports = {
   startTeamChat,
   startDepartmentChat,
   startTaskChat,
+  startProjectChat,
   listMessages,
   sendMessage,
   markRead,

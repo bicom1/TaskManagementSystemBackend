@@ -28,9 +28,7 @@ function authenticate(req, res, next) {
   }
 }
 
-/**
- * Authenticate + attach policy context (department, teams, permissions).
- */
+
 async function authenticateWithContext(req, res, next) {
   try {
     const decoded = decodeBearer(req);

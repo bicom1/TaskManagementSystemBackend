@@ -16,6 +16,8 @@ const {
 } = require('../constants/chat.constant');
 const { emitChatMessage, emitConversationUpdated } = require('../socket/socket');
 const env = require('../config/env');
+const policy = require('./policy.service');
+const { ACCESS } = require('../constants/permissions.constant');
 
 function dmKeyFor(userA, userB) {
   return [String(userA), String(userB)].sort().join(':');
@@ -254,11 +256,11 @@ class ChatService {
 
   async stripGroupChatDmKeys() {
     await Conversation.updateMany(
-      { type: { $in: ['team', 'department', 'task'] }, dmKey: { $ne: null } },
+      { type: { $in: ['team', 'department', 'task', 'project'] }, dmKey: { $ne: null } },
       { $unset: { dmKey: 1 } }
     );
     await Conversation.updateMany(
-      { type: { $in: ['team', 'department', 'task'] }, dmKey: null },
+      { type: { $in: ['team', 'department', 'task', 'project'] }, dmKey: null },
       { $unset: { dmKey: 1 } }
     );
   }
@@ -456,6 +458,74 @@ class ChatService {
         { $addToSet: { participants: { $each: participantIds } } }
       );
     }
+
+    return this.getConversation(conversation._id, actorId);
+  }
+
+  async getOrCreateProjectChat(actorId, projectId) {
+    const Project = require('../models/project.model');
+    const project = await Project.findById(projectId)
+      .populate('team', 'lead members department')
+      .lean();
+    if (!project) throw ApiError.notFound('Project not found');
+
+    const actor = await policy.buildActorContext(actorId);
+    if (policy.getProjectAccess(actor, project) === ACCESS.NONE) {
+      throw ApiError.forbidden('You cannot access this project channel');
+    }
+
+    await this.stripGroupChatDmKeys();
+
+    const team = project.team;
+    const participantIds = uniqueIds([
+      actorId,
+      project.owner,
+      ...(project.members || []),
+      team?.lead,
+      ...(team?.members || []),
+    ]);
+
+    let conversation = await Conversation.findOne({
+      type: 'project',
+      relatedProject: projectId,
+      isActive: true,
+    }).sort({ createdAt: 1 });
+
+    if (!conversation) {
+      try {
+        conversation = await Conversation.create({
+          type: 'project',
+          relatedProject: projectId,
+          team: team?._id || team || null,
+          title: `#${project.name}`.slice(0, 120),
+          participants: participantIds,
+          createdBy: actorId,
+          readState: participantIds.map((id) => ({
+            user: id,
+            lastReadAt: id === String(actorId) ? new Date() : new Date(0),
+          })),
+          lastMessagePreview: 'Channel started',
+        });
+      } catch (err) {
+        conversation = await Conversation.findOne({
+          type: 'project',
+          relatedProject: projectId,
+        }).sort({ createdAt: 1 });
+        if (!conversation) throw err;
+      }
+    }
+
+    await Conversation.updateOne(
+      { _id: conversation._id },
+      {
+        $addToSet: { participants: { $each: participantIds } },
+        $set: {
+          isActive: true,
+          title: `#${project.name}`.slice(0, 120),
+        },
+        $unset: { dmKey: 1 },
+      }
+    );
 
     return this.getConversation(conversation._id, actorId);
   }

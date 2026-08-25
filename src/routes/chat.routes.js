@@ -8,6 +8,7 @@ const {
   startTeamSchema,
   startDepartmentSchema,
   startTaskSchema,
+  startProjectSchema,
   sendChatMessageSchema,
 } = require('../validators/chat.validator');
 const { MAX_FILES_PER_MESSAGE } = require('../constants/chat.constant');
@@ -25,6 +26,7 @@ router.post('/dm', validate(startDmSchema), controller.startDm);
 router.post('/team', validate(startTeamSchema), controller.startTeamChat);
 router.post('/department', validate(startDepartmentSchema), controller.startDepartmentChat);
 router.post('/task', validate(startTaskSchema), controller.startTaskChat);
+router.post('/project', validate(startProjectSchema), controller.startProjectChat);
 
 router.post(
   '/conversations/:id/messages',

@@ -4,7 +4,7 @@ const conversationSchema = new mongoose.Schema(
   {
     type: {
       type: String,
-      enum: ['dm', 'team', 'department', 'task'],
+      enum: ['dm', 'team', 'department', 'task', 'project'],
       default: 'dm',
       required: true,
     },
@@ -46,5 +46,6 @@ conversationSchema.index({ participants: 1, lastMessageAt: -1 });
 conversationSchema.index({ type: 1, team: 1, isActive: 1 });
 conversationSchema.index({ type: 1, department: 1 });
 conversationSchema.index({ relatedTask: 1 });
+conversationSchema.index({ type: 1, relatedProject: 1, isActive: 1 });
 
 module.exports = mongoose.model('Conversation', conversationSchema);

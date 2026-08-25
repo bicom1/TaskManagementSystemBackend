@@ -28,6 +28,12 @@ const startTaskSchema = z.object({
   }),
 });
 
+const startProjectSchema = z.object({
+  body: z.object({
+    projectId: z.string().length(24),
+  }),
+});
+
 const shareLinkSchema = z.object({
   url: z.string().trim().min(1).max(1000),
   label: z.string().trim().max(200).optional(),
@@ -55,5 +61,6 @@ module.exports = {
   startTeamSchema,
   startDepartmentSchema,
   startTaskSchema,
+  startProjectSchema,
   sendChatMessageSchema,
 };

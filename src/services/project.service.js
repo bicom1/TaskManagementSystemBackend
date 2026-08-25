@@ -10,6 +10,7 @@ const {
   generateProjectKey,
 } = require('../constants/space.constant');
 const { emitProjectEvent } = require('../socket/socket');
+const Conversation = require('../models/conversation.model');
 
 async function resolveActor(actor) {
   if (actor?.context) return actor.context;
@@ -263,6 +264,11 @@ class ProjectService {
       ownerId: project.owner,
       memberIds: project.members,
     });
+
+    await Conversation.updateOne(
+      { type: 'project', relatedProject: projectId, isActive: true },
+      { $addToSet: { participants: userId }, $unset: { dmKey: 1 } }
+    );
 
     return project;
   }

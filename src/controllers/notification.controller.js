@@ -17,4 +17,9 @@ async function markAllRead(req, res) {
   res.status(httpStatus.StatusCodes.OK).json({ success: true, message: 'All notifications marked as read' });
 }
 
-module.exports = { list, unreadCount, markAllRead };
+async function markOneRead(req, res) {
+  const data = await notificationService.markOneRead(req.params.id, req.user.id);
+  res.status(httpStatus.StatusCodes.OK).json({ success: true, data });
+}
+
+module.exports = { list, unreadCount, markAllRead, markOneRead };

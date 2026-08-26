@@ -10,6 +10,16 @@ class NotificationRepository extends BaseRepository {
     return this.model.updateMany({ recipient: userId, isRead: false }, { isRead: true }).exec();
   }
 
+  async markOneRead(id, userId) {
+    return this.model
+      .findOneAndUpdate(
+        { _id: id, recipient: userId, isRead: false },
+        { isRead: true },
+        { new: true }
+      )
+      .exec();
+  }
+
   async unreadCount(userId) {
     return this.model.countDocuments({ recipient: userId, isRead: false });
   }

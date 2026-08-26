@@ -53,6 +53,10 @@ class NotificationService {
     return notificationRepository.markAllRead(userId);
   }
 
+  async markOneRead(id, userId) {
+    return notificationRepository.markOneRead(id, userId);
+  }
+
   async unreadCount(userId) {
     return notificationRepository.unreadCount(userId);
   }

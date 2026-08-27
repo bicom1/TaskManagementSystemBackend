@@ -227,11 +227,16 @@ class UserService {
     const existingUser = await User.findOne({
       email: { $regex: `^${normalizedEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' },
     }).select('+password +inviteToken +inviteTokenExpires');
-    if (existingUser && !existingUser.invitePending) {
+
+    // Re-send when pending OR never logged in (orphans from live timeouts / old invites)
+    const canReinvite =
+      Boolean(existingUser) &&
+      (existingUser.invitePending || !existingUser.lastLoginAt);
+
+    if (existingUser && !canReinvite) {
       throw ApiError.conflict('A user with this email already exists');
     }
-    // invitePending users: allow re-send (live timeouts often create the row then fail the client)
-    const isReinvite = Boolean(existingUser?.invitePending);
+    const isReinvite = Boolean(existingUser && canReinvite);
 
     if (!ROLE_VALUES.includes(role)) {
       throw ApiError.badRequest('Invalid role');
@@ -409,7 +414,7 @@ class UserService {
       emailTo: normalizedEmail,
     };
 
-    // Invite email via Resend (noreply@bicomworkspace.com) or SMTP fallback
+    // Invite email via Resend (preferred) — hard cap so Render cold starts don't time out the client
     let emailFrom =
       (env.SMTP_USER && `BIWORKSPACE <${String(env.SMTP_USER).replace(/^["']|["']$/g, '')}>`) ||
       env.EMAIL_FROM ||
@@ -419,28 +424,40 @@ class UserService {
         ? `BIWORKSPACE <${String(env.SMTP_USER).replace(/^["']|["']$/g, '')}>`
         : 'BIWORKSPACE <noreply@bicomworkspace.com>';
     }
-    let mailResult;
+
+    const mailPayload = {
+      to: normalizedEmail,
+      subject: `${inviter?.name || 'BIWORKSPACE'} invited you to BIWORKSPACE`,
+      html: inviteEmail(emailPayload),
+      text: [
+        `You're invited to BIWORKSPACE`,
+        ``,
+        `Hi ${displayName},`,
+        `${inviter?.name || 'A teammate'} invited you to join BIWORKSPACE as ${getInviteRoleLabel(departmentDoc?.code, role)}.`,
+        `This email was sent to ${normalizedEmail} from BIWORKSPACE.`,
+        ``,
+        `Email: ${normalizedEmail}`,
+        `Temporary password: ${temporaryPassword}`,
+        ``,
+        acceptUrl ? `Accept invite: ${acceptUrl}` : null,
+        `Sign in: ${loginUrl}`,
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    };
+
+    const INVITE_MAIL_MS = 12_000;
+    let mailResult = null;
+    let emailError = null;
+    let emailTimedOut = false;
+
     try {
-      mailResult = await sendMail({
-        to: normalizedEmail,
-        subject: `${inviter?.name || 'BIWORKSPACE'} invited you to BIWORKSPACE`,
-        html: inviteEmail(emailPayload),
-        text: [
-          `You're invited to BIWORKSPACE`,
-          ``,
-          `Hi ${displayName},`,
-          `${inviter?.name || 'A teammate'} invited you to join BIWORKSPACE as ${getInviteRoleLabel(departmentDoc?.code, role)}.`,
-          `This email was sent to ${normalizedEmail} from BIWORKSPACE.`,
-          ``,
-          `Email: ${normalizedEmail}`,
-          `Temporary password: ${temporaryPassword}`,
-          ``,
-          acceptUrl ? `Accept invite: ${acceptUrl}` : null,
-          `Sign in: ${loginUrl}`,
-        ]
-          .filter(Boolean)
-          .join('\n'),
-      });
+      mailResult = await Promise.race([
+        sendMail(mailPayload),
+        new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('EMAIL_TIMEOUT')), INVITE_MAIL_MS);
+        }),
+      ]);
 
       if (mailResult?.from) emailFrom = mailResult.from;
 
@@ -453,7 +470,6 @@ class UserService {
         );
       }
 
-      // Best-effort delivery status — do not block the invite response (live timeouts)
       if (mailResult?.provider === 'resend' && mailResult.messageId && !mailResult.redirected) {
         getResendEmailStatus(mailResult.messageId)
           .then((status) => {
@@ -466,54 +482,39 @@ class UserService {
           .catch(() => {});
       }
     } catch (err) {
-      logger.error(`Invite email required but failed for ${normalizedEmail}: ${err.message}`);
-      // Roll back NEW invitees only — keep pending users so a retry can re-send
-      if (!isReinvite) {
-        if (resolvedTeamId) {
-          try {
-            await teamService.removeMember(resolvedTeamId, user._id, actor.id);
-          } catch (cleanupErr) {
-            logger.error(`Invite team rollback failed: ${cleanupErr.message}`);
-          }
-        }
-        if (role === ROLES.DEPT_HEAD && resolvedDepartment) {
-          try {
-            await Department.findByIdAndUpdate(resolvedDepartment, { head: null });
-          } catch (cleanupErr) {
-            logger.error(`Invite dept-head rollback failed: ${cleanupErr.message}`);
-          }
-        }
-        try {
-          await User.findByIdAndDelete(user._id);
-        } catch (cleanupErr) {
-          logger.error(`Invite user rollback failed: ${cleanupErr.message}`);
-        }
+      emailTimedOut = err.message === 'EMAIL_TIMEOUT';
+      emailError = err.message;
+      logger.error(
+        `Invite email ${emailTimedOut ? 'timed out' : 'failed'} for ${normalizedEmail}: ${err.message}`
+      );
+
+      // Keep sending in background after timeout (Resend/SMTP may still finish)
+      if (emailTimedOut) {
+        sendMail(mailPayload)
+          .then((r) =>
+            logger.info(
+              `Late invite email delivered to ${normalizedEmail} via ${r?.provider} id=${r?.messageId}`
+            )
+          )
+          .catch((lateErr) =>
+            logger.error(`Late invite email failed for ${normalizedEmail}: ${lateErr.message}`)
+          );
       }
 
-      let message =
-        'Invite email could not be delivered. On Render set EMAIL_PROVIDER=resend and RESEND_API_KEY, then redeploy.';
-      if (/BadCredentials|Invalid login|535/i.test(err.message)) {
-        message =
-          'SMTP login failed (535). Prefer EMAIL_PROVIDER=resend + RESEND_API_KEY on Render, ' +
-          'or set SMTP_PASS_B64 for noreply@bicomworkspace.com.';
-      } else if (/RESEND_API_KEY|No email provider|not configured/i.test(err.message)) {
-        message =
-          'Email is not configured on the live server. Set EMAIL_PROVIDER=resend and RESEND_API_KEY on Render, then redeploy.';
-      } else if (err.message) {
-        message = `${message} (${err.message})`;
-      }
-      throw ApiError.serviceUnavailable(message);
+      // Do NOT delete the user — live timeouts were causing "already exists" on retry.
+      // Client always gets acceptUrl + temp password to share manually if inbox is empty.
     }
 
-    const emailDelivered = true;
-    const emailError = null;
+    const emailDelivered = Boolean(mailResult?.messageId) && !mailResult?.logged && !emailTimedOut;
     const emailRedirectedTo = mailResult?.emailRedirectedTo || null;
-    const via = mailResult?.provider || 'email';
-    const emailNote = mailResult?.redirected
-      ? `Resend test mode: email delivered to ${emailRedirectedTo} (your Resend account). Intended user: ${normalizedEmail}. Verify bicomworkspace.com at resend.com/domains to send directly.`
-      : isReinvite
-        ? `Invite email re-sent via ${via} to ${normalizedEmail}. Check inbox and spam.`
-        : `Invite email accepted by ${via} for ${normalizedEmail}. Check inbox and spam (messageId: ${mailResult?.messageId || 'n/a'}).`;
+    const via = mailResult?.provider || (emailTimedOut ? 'pending' : 'none');
+    const emailNote = emailDelivered
+      ? mailResult?.redirected
+        ? `Resend test mode: email delivered to ${emailRedirectedTo}. Intended: ${normalizedEmail}.`
+        : `Invite email sent via ${via} to ${normalizedEmail}. Check inbox and spam.`
+      : emailTimedOut
+        ? `Email is still sending — if it does not arrive in 1–2 minutes, share the invite link below. On Render set EMAIL_PROVIDER=resend and RESEND_API_KEY.`
+        : `Invite created but email was not delivered (${emailError || 'unknown'}). Share the accept link / password below. On Render set EMAIL_PROVIDER=resend + RESEND_API_KEY, then redeploy.`;
 
     await notificationService
       .notify({

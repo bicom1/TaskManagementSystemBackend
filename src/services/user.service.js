@@ -18,7 +18,7 @@ const {
 } = require('../constants/roles.constant');
 const { PERMISSIONS, getInvitableRoles } = require('../constants/permissions.constant');
 const { NOTIFICATION_TYPES } = require('../constants/notification.constant');
-const { sendMail, getResendEmailStatus } = require('../emails/mailer.util');
+const { sendMail } = require('../emails/mailer.util');
 const { inviteEmail } = require('../emails/templates');
 const env = require('../config/env');
 const logger = require('../config/logger');
@@ -402,8 +402,12 @@ class UserService {
       await Department.findByIdAndUpdate(resolvedDepartment, { head: user._id });
     }
 
-    const acceptUrl = `${env.CLIENT_URL}/accept-invite?token=${inviteRaw}`;
-    const loginUrl = `${env.CLIENT_URL}/login`;
+    const clientBase =
+      env.NODE_ENV === 'production' && /localhost|127\.0\.0\.1/i.test(String(env.CLIENT_URL || ''))
+        ? 'https://task-management-system-frontend-z23.vercel.app'
+        : env.CLIENT_URL;
+    const acceptUrl = `${clientBase}/accept-invite?token=${inviteRaw}`;
+    const loginUrl = `${clientBase}/login`;
     const emailPayload = {
       to: normalizedEmail,
       recipientName: displayName,
@@ -414,7 +418,7 @@ class UserService {
       emailTo: normalizedEmail,
     };
 
-    // Invite email via Resend (preferred) — hard cap so Render cold starts don't time out the client
+    // Return invite link immediately — email runs in background (avoids live timeouts)
     let emailFrom =
       (env.SMTP_USER && `BIWORKSPACE <${String(env.SMTP_USER).replace(/^["']|["']$/g, '')}>`) ||
       env.EMAIL_FROM ||
@@ -434,87 +438,32 @@ class UserService {
         ``,
         `Hi ${displayName},`,
         `${inviter?.name || 'A teammate'} invited you to join BIWORKSPACE as ${getInviteRoleLabel(departmentDoc?.code, role)}.`,
-        `This email was sent to ${normalizedEmail} from BIWORKSPACE.`,
         ``,
+        `Accept invite: ${acceptUrl}`,
+        `Sign in: ${loginUrl}`,
         `Email: ${normalizedEmail}`,
         `Temporary password: ${temporaryPassword}`,
-        ``,
-        acceptUrl ? `Accept invite: ${acceptUrl}` : null,
-        `Sign in: ${loginUrl}`,
-      ]
-        .filter(Boolean)
-        .join('\n'),
+      ].join('\n'),
     };
 
-    const INVITE_MAIL_MS = 12_000;
-    let mailResult = null;
-    let emailError = null;
-    let emailTimedOut = false;
-
-    try {
-      mailResult = await Promise.race([
-        sendMail(mailPayload),
-        new Promise((_, reject) => {
-          setTimeout(() => reject(new Error('EMAIL_TIMEOUT')), INVITE_MAIL_MS);
-        }),
-      ]);
-
-      if (mailResult?.from) emailFrom = mailResult.from;
-
-      const emailDelivered = Boolean(mailResult?.messageId) && !mailResult?.logged;
-      if (!emailDelivered) {
-        throw new Error(
-          mailResult?.logged
-            ? 'Email provider is not configured — cannot deliver invite email'
-            : 'Invite email was not accepted by the mail server'
+    // Fire-and-forget email — never block the invite response
+    sendMail(mailPayload)
+      .then((r) => {
+        logger.info(
+          `Invite email sent to ${normalizedEmail} via ${r?.provider} id=${r?.messageId || 'n/a'}`
         );
-      }
+      })
+      .catch((err) => {
+        logger.error(`Invite email background failed for ${normalizedEmail}: ${err.message}`);
+      });
 
-      if (mailResult?.provider === 'resend' && mailResult.messageId && !mailResult.redirected) {
-        getResendEmailStatus(mailResult.messageId)
-          .then((status) => {
-            if (status?.lastEvent) {
-              logger.info(
-                `Invite email to ${normalizedEmail} Resend status=${status.lastEvent} id=${mailResult.messageId}`
-              );
-            }
-          })
-          .catch(() => {});
-      }
-    } catch (err) {
-      emailTimedOut = err.message === 'EMAIL_TIMEOUT';
-      emailError = err.message;
-      logger.error(
-        `Invite email ${emailTimedOut ? 'timed out' : 'failed'} for ${normalizedEmail}: ${err.message}`
-      );
-
-      // Keep sending in background after timeout (Resend/SMTP may still finish)
-      if (emailTimedOut) {
-        sendMail(mailPayload)
-          .then((r) =>
-            logger.info(
-              `Late invite email delivered to ${normalizedEmail} via ${r?.provider} id=${r?.messageId}`
-            )
-          )
-          .catch((lateErr) =>
-            logger.error(`Late invite email failed for ${normalizedEmail}: ${lateErr.message}`)
-          );
-      }
-
-      // Do NOT delete the user — live timeouts were causing "already exists" on retry.
-      // Client always gets acceptUrl + temp password to share manually if inbox is empty.
-    }
-
-    const emailDelivered = Boolean(mailResult?.messageId) && !mailResult?.logged && !emailTimedOut;
-    const emailRedirectedTo = mailResult?.emailRedirectedTo || null;
-    const via = mailResult?.provider || (emailTimedOut ? 'pending' : 'none');
-    const emailNote = emailDelivered
-      ? mailResult?.redirected
-        ? `Resend test mode: email delivered to ${emailRedirectedTo}. Intended: ${normalizedEmail}.`
-        : `Invite email sent via ${via} to ${normalizedEmail}. Check inbox and spam.`
-      : emailTimedOut
-        ? `Email is still sending — if it does not arrive in 1–2 minutes, share the invite link below. On Render set EMAIL_PROVIDER=resend and RESEND_API_KEY.`
-        : `Invite created but email was not delivered (${emailError || 'unknown'}). Share the accept link / password below. On Render set EMAIL_PROVIDER=resend + RESEND_API_KEY, then redeploy.`;
+    const emailDelivered = false;
+    const emailError = null;
+    const emailRedirectedTo = null;
+    const via = 'background';
+    const emailNote =
+      'Share the invite link below with them now (WhatsApp/email). A BIWORKSPACE email is also being sent in the background — check spam if it arrives.';
+    const mailResult = null;
 
     await notificationService
       .notify({

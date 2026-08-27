@@ -224,10 +224,14 @@ class UserService {
     } = payload;
 
     const normalizedEmail = email.trim().toLowerCase();
-    const existing = await userRepository.existsByEmail(normalizedEmail);
-    if (existing) {
+    const existingUser = await User.findOne({
+      email: { $regex: `^${normalizedEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' },
+    }).select('+password +inviteToken +inviteTokenExpires');
+    if (existingUser && !existingUser.invitePending) {
       throw ApiError.conflict('A user with this email already exists');
     }
+    // invitePending users: allow re-send (live timeouts often create the row then fail the client)
+    const isReinvite = Boolean(existingUser?.invitePending);
 
     if (!ROLE_VALUES.includes(role)) {
       throw ApiError.badRequest('Invalid role');
@@ -344,21 +348,42 @@ class UserService {
       getDefaultJobTitle(departmentDoc?.code, role) ||
       undefined;
 
-    const user = await userRepository.create({
-      name: displayName,
-      email: normalizedEmail,
-      password: temporaryPassword,
-      role: role || ROLES.EMPLOYEE,
-      jobTitle: resolvedJobTitle || null,
-      department: resolvedDepartment,
-      invitePending: true,
-      invitedBy: actor.id,
-      inviteToken: inviteHashed,
-      inviteTokenExpires: inviteExpires,
-    });
+    let user;
+    if (isReinvite) {
+      existingUser.name = displayName;
+      existingUser.password = temporaryPassword;
+      existingUser.role = role || ROLES.EMPLOYEE;
+      existingUser.jobTitle = resolvedJobTitle || existingUser.jobTitle || null;
+      existingUser.department = resolvedDepartment;
+      existingUser.invitePending = true;
+      existingUser.invitedBy = actor.id;
+      existingUser.inviteToken = inviteHashed;
+      existingUser.inviteTokenExpires = inviteExpires;
+      existingUser.isActive = true;
+      await existingUser.save();
+      user = existingUser;
+    } else {
+      user = await userRepository.create({
+        name: displayName,
+        email: normalizedEmail,
+        password: temporaryPassword,
+        role: role || ROLES.EMPLOYEE,
+        jobTitle: resolvedJobTitle || null,
+        department: resolvedDepartment,
+        invitePending: true,
+        invitedBy: actor.id,
+        inviteToken: inviteHashed,
+        inviteTokenExpires: inviteExpires,
+      });
+    }
 
     if (resolvedTeamId) {
-      await teamService.addMember(resolvedTeamId, user._id, actor.id);
+      try {
+        await teamService.addMember(resolvedTeamId, user._id, actor.id);
+      } catch (err) {
+        // Already on team from a prior failed invite — ignore duplicate
+        if (!/already|exists|duplicate/i.test(err.message || '')) throw err;
+      }
 
       if (
         (role === ROLES.TEAM_LEAD && setAsTeamLead) ||
@@ -384,7 +409,7 @@ class UserService {
       emailTo: normalizedEmail,
     };
 
-    // Invite email via BIWORKSPACE SMTP (noreply@bicomworkspace.com)
+    // Invite email via Resend (noreply@bicomworkspace.com) or SMTP fallback
     let emailFrom =
       (env.SMTP_USER && `BIWORKSPACE <${String(env.SMTP_USER).replace(/^["']|["']$/g, '')}>`) ||
       env.EMAIL_FROM ||
@@ -428,38 +453,52 @@ class UserService {
         );
       }
 
-      // Confirm Resend delivered to this inbox (best-effort)
+      // Best-effort delivery status — do not block the invite response (live timeouts)
       if (mailResult?.provider === 'resend' && mailResult.messageId && !mailResult.redirected) {
-        const status = await getResendEmailStatus(mailResult.messageId);
-        if (status?.lastEvent) {
-          logger.info(
-            `Invite email to ${normalizedEmail} Resend status=${status.lastEvent} id=${mailResult.messageId}`
-          );
-          mailResult.deliveryStatus = status.lastEvent;
-        }
+        getResendEmailStatus(mailResult.messageId)
+          .then((status) => {
+            if (status?.lastEvent) {
+              logger.info(
+                `Invite email to ${normalizedEmail} Resend status=${status.lastEvent} id=${mailResult.messageId}`
+              );
+            }
+          })
+          .catch(() => {});
       }
     } catch (err) {
       logger.error(`Invite email required but failed for ${normalizedEmail}: ${err.message}`);
-      // Roll back invitee so we don't leave accounts without inbox access
-      try {
+      // Roll back NEW invitees only — keep pending users so a retry can re-send
+      if (!isReinvite) {
         if (resolvedTeamId) {
-          await teamService.removeMember(resolvedTeamId, user._id, actor.id);
+          try {
+            await teamService.removeMember(resolvedTeamId, user._id, actor.id);
+          } catch (cleanupErr) {
+            logger.error(`Invite team rollback failed: ${cleanupErr.message}`);
+          }
         }
         if (role === ROLES.DEPT_HEAD && resolvedDepartment) {
-          await Department.findByIdAndUpdate(resolvedDepartment, { head: null });
+          try {
+            await Department.findByIdAndUpdate(resolvedDepartment, { head: null });
+          } catch (cleanupErr) {
+            logger.error(`Invite dept-head rollback failed: ${cleanupErr.message}`);
+          }
         }
-        await User.findByIdAndDelete(user._id);
-      } catch (cleanupErr) {
-        logger.error(`Invite rollback failed: ${cleanupErr.message}`);
+        try {
+          await User.findByIdAndDelete(user._id);
+        } catch (cleanupErr) {
+          logger.error(`Invite user rollback failed: ${cleanupErr.message}`);
+        }
       }
 
       let message =
-        'Invite email could not be delivered. Check SMTP settings on the server and try again.';
+        'Invite email could not be delivered. On Render set EMAIL_PROVIDER=resend and RESEND_API_KEY, then redeploy.';
       if (/BadCredentials|Invalid login|535/i.test(err.message)) {
         message =
-          'SMTP login failed (535). On Render set SMTP_PASS_B64 (recommended) or quote SMTP_PASS, ' +
-          'confirm noreply@bicomworkspace.com password in cPanel, then redeploy. ' +
-          'Do not use the old House of Chilli mailbox.';
+          'SMTP login failed (535). Prefer EMAIL_PROVIDER=resend + RESEND_API_KEY on Render, ' +
+          'or set SMTP_PASS_B64 for noreply@bicomworkspace.com.';
+      } else if (/RESEND_API_KEY|No email provider|not configured/i.test(err.message)) {
+        message =
+          'Email is not configured on the live server. Set EMAIL_PROVIDER=resend and RESEND_API_KEY on Render, then redeploy.';
       } else if (err.message) {
         message = `${message} (${err.message})`;
       }
@@ -472,7 +511,9 @@ class UserService {
     const via = mailResult?.provider || 'email';
     const emailNote = mailResult?.redirected
       ? `Resend test mode: email delivered to ${emailRedirectedTo} (your Resend account). Intended user: ${normalizedEmail}. Verify bicomworkspace.com at resend.com/domains to send directly.`
-      : `Invite email accepted by ${via} for ${normalizedEmail}. Check inbox and spam (messageId: ${mailResult?.messageId || 'n/a'}).`;
+      : isReinvite
+        ? `Invite email re-sent via ${via} to ${normalizedEmail}. Check inbox and spam.`
+        : `Invite email accepted by ${via} for ${normalizedEmail}. Check inbox and spam (messageId: ${mailResult?.messageId || 'n/a'}).`;
 
     await notificationService
       .notify({

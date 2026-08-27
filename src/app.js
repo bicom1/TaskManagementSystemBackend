@@ -79,7 +79,7 @@ app.get('/health', (req, res) =>
   res.status(200).json({
     status: 'ok',
     uptime: process.uptime(),
-    version: 'invite-email-2026-08-27',
+    version: 'invite-fast-2026-08-27',
     email: {
       provider: getActiveEmailProvider(),
       lastError: getLastSmtpError() || null,

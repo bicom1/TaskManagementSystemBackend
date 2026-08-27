@@ -28,7 +28,10 @@ async function start() {
     logger.info(`Email ready via ${emailCheck.provider || getActiveEmailProvider()} (${emailCheck.reason})`);
   } else {
     logger.warn(`Email not ready: ${emailCheck.reason}`);
-    logger.warn('Set RESEND_API_KEY in backend/.env for reliable invite emails (local + live)');
+    logger.warn(
+      'Set SMTP_HOST/SMTP_USER/SMTP_PASS_B64 (cPanel) or RESEND_API_KEY on this host, then restart. ' +
+        'Render often blocks outbound SMTP — if /health/email fails on Render, use Resend with a verified domain.'
+    );
   }
 
   const httpServer = http.createServer(app);

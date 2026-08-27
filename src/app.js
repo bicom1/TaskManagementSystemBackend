@@ -17,6 +17,11 @@ const routes = require('./routes');
 const auditLogger = require('./middlewares/auditLogger.middleware');
 const errorHandler = require('./middlewares/error.middleware');
 const ApiError = require('./utils/ApiError.util');
+const {
+  getActiveEmailProvider,
+  getLastSmtpError,
+  verifyEmailConnection,
+} = require('./emails/mailer.util');
 
 const app = express();
 
@@ -70,7 +75,28 @@ app.use(
 
 app.use(auditLogger);
 
-app.get('/health', (req, res) => res.status(200).json({ status: 'ok', uptime: process.uptime() }));
+app.get('/health', (req, res) =>
+  res.status(200).json({
+    status: 'ok',
+    uptime: process.uptime(),
+    email: {
+      provider: getActiveEmailProvider(),
+      lastError: getLastSmtpError() || null,
+    },
+  })
+);
+
+/** Live check that SMTP/API can authenticate (no secrets returned) */
+app.get('/health/email', async (req, res) => {
+  const check = await verifyEmailConnection();
+  res.status(check.ok ? 200 : 503).json({
+    ok: check.ok,
+    provider: check.provider || getActiveEmailProvider(),
+    reason: check.reason,
+    user: check.user || null,
+    lastError: getLastSmtpError() || null,
+  });
+});
 
 // Root is not an API page — return a small OK payload (stops Render/browser 404 noise)
 app.get('/', (req, res) => {
@@ -78,6 +104,7 @@ app.get('/', (req, res) => {
     success: true,
     name: 'BI Workspace API',
     health: '/health',
+    emailHealth: '/health/email',
     docs: '/api-docs',
     api: '/api/v1',
   });

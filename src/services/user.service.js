@@ -469,9 +469,10 @@ class UserService {
     const emailDelivered = true;
     const emailError = null;
     const emailRedirectedTo = mailResult?.emailRedirectedTo || null;
+    const via = mailResult?.provider || 'email';
     const emailNote = mailResult?.redirected
-      ? `Resend test mode: email delivered to ${emailRedirectedTo} (your Resend account). Intended user: ${normalizedEmail}. Use a verified domain FROM address to send directly.`
-      : `Invite email sent to ${normalizedEmail} inbox via Resend.`;
+      ? `Resend test mode: email delivered to ${emailRedirectedTo} (your Resend account). Intended user: ${normalizedEmail}. Verify bicomworkspace.com at resend.com/domains to send directly.`
+      : `Invite email accepted by ${via} for ${normalizedEmail}. Check inbox and spam (messageId: ${mailResult?.messageId || 'n/a'}).`;
 
     await notificationService
       .notify({
@@ -507,6 +508,8 @@ class UserService {
       emailError,
       emailTo: normalizedEmail,
       emailFrom,
+      emailProvider: via,
+      emailMessageId: mailResult?.messageId || null,
       emailRedirectedTo,
       emailNote,
       emailDeliveryStatus: mailResult?.deliveryStatus || null,

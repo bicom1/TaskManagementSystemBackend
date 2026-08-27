@@ -12,6 +12,10 @@ let transporter = null;
 let smtpConfigured = false;
 let lastSmtpError = null;
 let activeProvider = null;
+/** @type {{ at: number, verified: Set<string> } | null} */
+let resendDomainCache = null;
+const RESEND_DOMAIN_CACHE_MS = 5 * 60 * 1000;
+const RESEND_TEST_FROM = 'BIWORKSPACE <onboarding@resend.dev>';
 
 function cleanSecret(value) {
   if (value == null) return value;
@@ -112,22 +116,43 @@ function isSmtpReady() {
 }
 
 /**
- * Prefer BI Communications SMTP whenever SMTP_* is configured.
- * Set EMAIL_PROVIDER=resend|brevo only when SMTP is NOT configured.
+ * EMAIL_PROVIDER controls the primary channel:
+ *   resend | brevo | smtp | auto
+ * auto = Resend → Brevo → SMTP (Gmail often drops unauthenticated cPanel SMTP).
  */
 function resolveEmailProvider() {
-  const forced = String(env.EMAIL_PROVIDER || 'smtp').trim().toLowerCase();
+  const forced = String(env.EMAIL_PROVIDER || 'auto').trim().toLowerCase();
   const resendKey = cleanSecret(env.RESEND_API_KEY);
   const brevoKey = cleanSecret(env.BREVO_API_KEY);
   const smtpReady = isSmtpReady();
 
-  // Always use BI Communications SMTP when host/user/pass are present
-  if (smtpReady) return 'smtp';
+  if (forced === 'resend') {
+    if (resendKey) return 'resend';
+    if (smtpReady) {
+      logger.warn('EMAIL_PROVIDER=resend but RESEND_API_KEY missing — using SMTP');
+      return 'smtp';
+    }
+    return 'none';
+  }
+  if (forced === 'brevo') {
+    if (brevoKey) return 'brevo';
+    if (smtpReady) {
+      logger.warn('EMAIL_PROVIDER=brevo but BREVO_API_KEY missing — using SMTP');
+      return 'smtp';
+    }
+    return 'none';
+  }
+  if (forced === 'smtp') {
+    if (smtpReady) return 'smtp';
+    if (resendKey) return 'resend';
+    if (brevoKey) return 'brevo';
+    return 'none';
+  }
 
-  if (forced === 'resend' && resendKey) return 'resend';
-  if (forced === 'brevo' && brevoKey) return 'brevo';
+  // auto: prefer Resend (reliable Gmail delivery), then Brevo, then SMTP
   if (resendKey) return 'resend';
   if (brevoKey) return 'brevo';
+  if (smtpReady) return 'smtp';
   return 'none';
 }
 
@@ -199,25 +224,93 @@ function wrapRedirectedInviteHtml(intendedTo, html) {
   `;
 }
 
+async function listVerifiedResendDomains(apiKey) {
+  if (resendDomainCache && Date.now() - resendDomainCache.at < RESEND_DOMAIN_CACHE_MS) {
+    return resendDomainCache.verified;
+  }
+  try {
+    const res = await fetch('https://api.resend.com/domains', {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    const body = await res.json().catch(() => ({}));
+    const verified = new Set(
+      (body?.data || [])
+        .filter((d) => String(d.status).toLowerCase() === 'verified')
+        .map((d) => String(d.name).toLowerCase())
+    );
+    resendDomainCache = { at: Date.now(), verified };
+    return verified;
+  } catch (err) {
+    logger.warn(`Could not list Resend domains: ${err.message}`);
+    return resendDomainCache?.verified || new Set();
+  }
+}
+
+function domainOfEmail(email) {
+  const parts = String(email || '').split('@');
+  return parts.length === 2 ? parts[1].toLowerCase() : '';
+}
+
+/**
+ * Prefer EMAIL_FROM / SMTP mailbox when that domain is verified on Resend.
+ * Else use any other verified Resend domain (temporary) so Gmail receives mail.
+ * Else use onboarding@resend.dev (account-owner inbox only).
+ */
+async function resolveResendFrom(apiKey) {
+  const fromInfo = parseFromAddress(preferredFromAddress());
+  const domain = domainOfEmail(fromInfo.email);
+  const verified = await listVerifiedResendDomains(apiKey);
+
+  if (domain && verified.has(domain)) {
+    return { ...fromInfo, verifiedDomain: true, temporaryDomain: false };
+  }
+
+  const fallbackDomain = [...verified].find((d) => d && d !== domain) || [...verified][0];
+  if (fallbackDomain) {
+    const email = `noreply@${fallbackDomain}`;
+    logger.warn(
+      `Resend domain "${domain || 'unknown'}" not verified — temporarily sending as ${email}. ` +
+        `Add DNS for bicomworkspace.com at resend.com/domains, then invites will use noreply@bicomworkspace.com.`
+    );
+    return {
+      name: 'BIWORKSPACE',
+      email,
+      formatted: `BIWORKSPACE <${email}>`,
+      verifiedDomain: true,
+      temporaryDomain: true,
+    };
+  }
+
+  if (domain) {
+    logger.warn(
+      `No verified Resend domain — sending as onboarding@resend.dev (Resend account inbox only)`
+    );
+  }
+  return {
+    name: 'BIWORKSPACE',
+    email: 'onboarding@resend.dev',
+    formatted: RESEND_TEST_FROM,
+    verifiedDomain: false,
+    temporaryDomain: false,
+  };
+}
+
 async function sendViaResend({ to, subject, html, text, replyTo }, { allowRedirect = true } = {}) {
   const apiKey = cleanSecret(env.RESEND_API_KEY);
   if (!apiKey) throw new Error('RESEND_API_KEY is not set');
 
-  const fromInfo = parseFromAddress(preferredFromAddress());
-
-  // Custom verified domain → always send to the real recipient inbox
-  const usingVerifiedDomain = !/onboarding@resend\.dev$/i.test(fromInfo.email);
+  const fromInfo = await resolveResendFrom(apiKey);
+  const usingVerifiedDomain = Boolean(fromInfo.verifiedDomain);
 
   const payload = {
-    from: fromInfo.formatted.includes('<')
-      ? fromInfo.formatted
-      : `${fromInfo.name} <${fromInfo.email}>`,
+    from: fromInfo.formatted,
     to: [to],
     subject,
     html,
     text: plainTextFromHtml(html, text),
   };
-  if (replyTo) payload.reply_to = replyTo;
+  const smtpUser = cleanSecret(env.SMTP_USER);
+  if (replyTo || smtpUser) payload.reply_to = replyTo || smtpUser;
 
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
@@ -235,13 +328,25 @@ async function sendViaResend({ to, subject, html, text, replyTo }, { allowRedire
       /only send testing emails to your own email address \(([^)]+)\)/i
     );
 
-    // Only redirect when still on Resend's shared test sender (no verified domain yet)
+    // Domain rejection while still using a custom From → should not happen often;
+    // resolveResendFrom already switches to onboarding@resend.dev when unverified.
+    if (
+      allowRedirect &&
+      /domain is not verified|invalid.*from|not verified/i.test(message) &&
+      !/onboarding@resend\.dev/i.test(String(payload.from))
+    ) {
+      logger.warn(`Resend from rejected (${message}) — forcing onboarding@resend.dev`);
+      resendDomainCache = { at: Date.now(), verified: new Set() };
+      return sendViaResend({ to, subject, html, text, replyTo }, { allowRedirect: true });
+    }
+
+    // Test-mode recipient limit: deliver to the Resend account inbox instead
     if (!usingVerifiedDomain && allowRedirect && match?.[1]) {
       const allowedInbox = String(match[1]).trim().toLowerCase();
       const intended = String(to).trim().toLowerCase();
       if (allowedInbox && intended !== allowedInbox) {
         logger.warn(
-          `Resend test mode: redirecting email for ${intended} → ${allowedInbox} (verify domain later for direct delivery)`
+          `Resend test mode: redirecting email for ${intended} → ${allowedInbox} (verify bicomworkspace.com for direct delivery)`
         );
         const redirected = await sendViaResend(
           {
@@ -375,6 +480,11 @@ async function sendViaSmtp({ to, subject, html, text, replyTo }) {
   logger.info(
     `SMTP accepted mail from=${from} to=${to} id=${result.messageId || 'n/a'} response=${result.response || 'ok'}`
   );
+  if (/@(gmail|googlemail)\.com$/i.test(to)) {
+    logger.warn(
+      'Gmail often drops cPanel SMTP without SPF/DKIM on bicomworkspace.com. Prefer EMAIL_PROVIDER=resend until DNS is verified.'
+    );
+  }
 
   return {
     ...result,
@@ -435,7 +545,7 @@ async function sendMail({ to, subject, html, text, replyTo }) {
       throw err;
     }
 
-    if ((provider === 'resend' || provider === 'brevo') && env.SMTP_HOST && env.SMTP_USER && env.SMTP_PASS) {
+    if ((provider === 'resend' || provider === 'brevo') && isSmtpReady()) {
       logger.warn(`${provider} failed (${err.message}) — falling back to SMTP`);
       try {
         const fallback = await sendViaSmtp({ to: recipient, subject, html, text, replyTo });

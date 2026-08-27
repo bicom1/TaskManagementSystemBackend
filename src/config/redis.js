@@ -52,13 +52,28 @@ async function verifyRedisConnection() {
   }
 }
 
+let redisQuotaExhausted = false;
+
+function isRedisQuotaError(err) {
+  return /max requests limit exceeded/i.test(String(err?.message || err || ''));
+}
+
+function disableRedisForProcess(reason) {
+  if (!redisQuotaExhausted) {
+    redisQuotaExhausted = true;
+    redis = null;
+    logger.warn(`Redis disabled for this process: ${reason}`);
+  }
+}
+
 async function cacheOrFetch(key, ttlSeconds, fetcher) {
-  if (redis) {
+  if (redis && !redisQuotaExhausted) {
     try {
       const cached = await redis.get(key);
       if (cached != null) return cached;
     } catch (err) {
-      logger.warn(`Cache read failed: ${err.message}`);
+      if (isRedisQuotaError(err)) disableRedisForProcess(err.message);
+      else logger.warn(`Cache read failed: ${err.message}`);
     }
   } else {
     const mem = memoryGet(key);
@@ -67,11 +82,12 @@ async function cacheOrFetch(key, ttlSeconds, fetcher) {
 
   const fresh = await fetcher();
 
-  if (redis) {
+  if (redis && !redisQuotaExhausted) {
     try {
       await redis.set(key, fresh, { ex: ttlSeconds });
     } catch (err) {
-      logger.warn(`Cache write failed: ${err.message}`);
+      if (isRedisQuotaError(err)) disableRedisForProcess(err.message);
+      else logger.warn(`Cache write failed: ${err.message}`);
     }
   } else {
     memorySet(key, fresh, ttlSeconds);

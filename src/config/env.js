@@ -35,9 +35,9 @@ const envSchema = z.object({
   /** Base64 of the SMTP password — use when the password starts with # or has special chars */
   SMTP_PASS_B64: z.string().optional(),
   EMAIL_FROM: z.string().default('BIWORKSPACE <noreply@bicomworkspace.com>'),
-  /** smtp | auto | resend | brevo — default smtp for BIWORKSPACE mailbox */
-  EMAIL_PROVIDER: z.string().optional().default('smtp'),
-  /** Recommended for local + live invite delivery: https://resend.com */
+  /** resend | smtp | brevo | auto — prefer resend until bicomworkspace.com DNS is verified */
+  EMAIL_PROVIDER: z.string().optional().default('resend'),
+  /** Recommended for Gmail delivery: https://resend.com (verify bicomworkspace.com) */
   RESEND_API_KEY: z.string().optional(),
   /** Alternative: https://www.brevo.com */
   BREVO_API_KEY: z.string().optional(),

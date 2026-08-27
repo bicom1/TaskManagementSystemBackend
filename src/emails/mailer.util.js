@@ -16,6 +16,9 @@ let activeProvider = null;
 let resendDomainCache = null;
 const RESEND_DOMAIN_CACHE_MS = 5 * 60 * 1000;
 const RESEND_TEST_FROM = 'BIWORKSPACE <onboarding@resend.dev>';
+/** Official BIWORKSPACE sending domain — never fall back to legacy brands */
+const PRIMARY_SEND_DOMAIN = 'bicomworkspace.com';
+const BLOCKED_FALLBACK_DOMAINS = /houseofchilli\.pk$/i;
 
 function cleanSecret(value) {
   if (value == null) return value;
@@ -57,6 +60,7 @@ function resetTransporter() {
   transporter = null;
   smtpConfigured = false;
   activeProvider = null;
+  resendDomainCache = null;
 }
 
 /** Never send as the old House of Chilli / outdated mailboxes */
@@ -252,25 +256,42 @@ function domainOfEmail(email) {
 }
 
 /**
- * Prefer EMAIL_FROM / SMTP mailbox when that domain is verified on Resend.
- * Else use any other verified Resend domain (temporary) so Gmail receives mail.
- * Else use onboarding@resend.dev (account-owner inbox only).
+ * Prefer noreply@bicomworkspace.com once that domain is verified on Resend.
+ * Never send as houseofchilli.pk. Use onboarding@resend.dev only if primary is unverified.
  */
 async function resolveResendFrom(apiKey) {
   const fromInfo = parseFromAddress(preferredFromAddress());
-  const domain = domainOfEmail(fromInfo.email);
+  let domain = domainOfEmail(fromInfo.email);
   const verified = await listVerifiedResendDomains(apiKey);
 
-  if (domain && verified.has(domain)) {
+  // Always prefer the official BIWORKSPACE domain when it is verified
+  if (verified.has(PRIMARY_SEND_DOMAIN)) {
+    const email =
+      domain === PRIMARY_SEND_DOMAIN && fromInfo.email
+        ? fromInfo.email
+        : `noreply@${PRIMARY_SEND_DOMAIN}`;
+    const name = fromInfo.name || 'BIWORKSPACE';
+    logger.info(`Resend From locked to ${name} <${email}> (verified ${PRIMARY_SEND_DOMAIN})`);
+    return {
+      name,
+      email,
+      formatted: `${name} <${email}>`,
+      verifiedDomain: true,
+      temporaryDomain: false,
+    };
+  }
+
+  if (domain && verified.has(domain) && !BLOCKED_FALLBACK_DOMAINS.test(domain)) {
     return { ...fromInfo, verifiedDomain: true, temporaryDomain: false };
   }
 
-  const fallbackDomain = [...verified].find((d) => d && d !== domain) || [...verified][0];
+  const fallbackDomain = [...verified].find(
+    (d) => d && d !== domain && !BLOCKED_FALLBACK_DOMAINS.test(d)
+  );
   if (fallbackDomain) {
     const email = `noreply@${fallbackDomain}`;
     logger.warn(
-      `Resend domain "${domain || 'unknown'}" not verified — temporarily sending as ${email}. ` +
-        `Add DNS for bicomworkspace.com at resend.com/domains, then invites will use noreply@bicomworkspace.com.`
+      `Resend domain "${PRIMARY_SEND_DOMAIN}" not verified yet — temporarily sending as ${email}`
     );
     return {
       name: 'BIWORKSPACE',
@@ -281,11 +302,10 @@ async function resolveResendFrom(apiKey) {
     };
   }
 
-  if (domain) {
-    logger.warn(
-      `No verified Resend domain — sending as onboarding@resend.dev (Resend account inbox only)`
-    );
-  }
+  logger.warn(
+    `Resend domain "${PRIMARY_SEND_DOMAIN}" not verified — sending as onboarding@resend.dev (account inbox only). ` +
+      `Do not use houseofchilli.pk.`
+  );
   return {
     name: 'BIWORKSPACE',
     email: 'onboarding@resend.dev',

@@ -8,6 +8,8 @@ const NOTIFICATION_TYPES = Object.freeze({
   COMMENT_ADDED: 'comment_added',
   MENTIONED: 'mentioned',
   PROJECT_INVITE: 'project_invite',
+  PROJECT_CREATED: 'project_created',
+  PROJECT_MEMBER_ADDED: 'project_member_added',
   USER_INVITED: 'user_invited',
   DEPARTMENT_CREATED: 'department_created',
   TEAM_CREATED: 'team_created',

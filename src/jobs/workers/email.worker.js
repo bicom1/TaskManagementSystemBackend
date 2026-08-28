@@ -46,7 +46,7 @@ function startEmailWorker() {
 
         await sendMail({
           to: data.to,
-          subject: SUBJECTS[template],
+          subject: data.subject || SUBJECTS[template],
           html: render(data),
         });
       },

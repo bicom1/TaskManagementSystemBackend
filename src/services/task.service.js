@@ -105,6 +105,8 @@ class TaskService {
           entityType: 'Task',
           entityId: task._id,
           emailToo: true,
+          metadata: { projectId: String(data.project) },
+          emailSubject: `Approval needed: ${task.title}`,
         });
       }
     }
@@ -262,6 +264,8 @@ class TaskService {
       entityType: 'Task',
       entityId: id,
       emailToo: true,
+      metadata: { projectId: String(existing.project?._id || existing.project || '') },
+      emailSubject: `Task approved: ${existing.title}`,
     });
 
     if (task.assignees?.length) {
@@ -301,6 +305,8 @@ class TaskService {
       entityType: 'Task',
       entityId: id,
       emailToo: true,
+      metadata: { projectId: String(existing.project?._id || existing.project || '') },
+      emailSubject: `Task rejected: ${existing.title}`,
     });
 
     emitTaskEvent('task:updated', task, existing.project);
@@ -588,9 +594,15 @@ class TaskService {
   }
 
   async #notifyAssignees(task, actorId) {
+    const actorKey = String(actorId);
+    const projectId = String(task.project?._id || task.project || '');
+    const assigneeIds = [...new Set((task.assignees || []).map((a) => String(a._id || a)))].filter(
+      Boolean
+    );
+
     await Promise.all(
-      task.assignees
-        .filter((a) => a.toString() !== actorId)
+      assigneeIds
+        .filter((assigneeId) => assigneeId !== actorKey)
         .map((assigneeId) =>
           notificationService.notify({
             recipient: assigneeId,
@@ -600,6 +612,8 @@ class TaskService {
             entityType: 'Task',
             entityId: task._id,
             emailToo: true,
+            metadata: { projectId },
+            emailSubject: `Task assigned: ${task.title}`,
           })
         )
     );

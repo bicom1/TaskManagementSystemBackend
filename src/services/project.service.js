@@ -11,6 +11,8 @@ const {
 } = require('../constants/space.constant');
 const { emitProjectEvent } = require('../socket/socket');
 const Conversation = require('../models/conversation.model');
+const notificationService = require('./notification.service');
+const { NOTIFICATION_TYPES } = require('../constants/notification.constant');
 
 async function resolveActor(actor) {
   if (actor?.context) return actor.context;
@@ -138,6 +140,14 @@ class ProjectService {
       teamId: team._id,
       ownerId: payload.owner,
       memberIds: payload.members,
+    });
+
+    await this.#notifyProjectMembers({
+      project,
+      actorId: actor.id,
+      type: NOTIFICATION_TYPES.PROJECT_CREATED,
+      message: `You were added to project "${project.name}"`,
+      emailSubject: `New project: ${project.name}`,
     });
 
     return project;
@@ -270,7 +280,48 @@ class ProjectService {
       { $addToSet: { participants: userId }, $unset: { dmKey: 1 } }
     );
 
+    if (String(userId) !== String(actor.id)) {
+      await notificationService
+        .notify({
+          recipient: userId,
+          sender: actor.id,
+          type: NOTIFICATION_TYPES.PROJECT_MEMBER_ADDED,
+          message: `You were added to project "${existing.name}"`,
+          entityType: 'Project',
+          entityId: projectId,
+          emailToo: true,
+          emailSubject: `Added to project: ${existing.name}`,
+        })
+        .catch(() => {});
+    }
+
     return project;
+  }
+
+  async #notifyProjectMembers({ project, actorId, type, message, emailSubject }) {
+    const actorKey = String(actorId);
+    const memberIds = [...new Set((project.members || []).map((m) => String(m._id || m)))].filter(
+      Boolean
+    );
+
+    await Promise.all(
+      memberIds
+        .filter((memberId) => memberId !== actorKey)
+        .map((memberId) =>
+          notificationService
+            .notify({
+              recipient: memberId,
+              sender: actorId,
+              type,
+              message,
+              entityType: 'Project',
+              entityId: project._id,
+              emailToo: true,
+              emailSubject,
+            })
+            .catch(() => {})
+        )
+    );
   }
 }
 

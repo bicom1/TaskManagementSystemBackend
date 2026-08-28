@@ -30,7 +30,7 @@ if (redisEnabled) {
 async function enqueueEmail(template, data) {
   if (!emailQueue) {
     logger.debug(`Email skipped (queue unavailable): ${template}`);
-    return;
+    return false;
   }
 
   try {
@@ -44,8 +44,10 @@ async function enqueueEmail(template, data) {
         removeOnFail: 500,
       }
     );
+    return true;
   } catch (err) {
     logger.warn(`Failed to enqueue email (${template}): ${err.message}`);
+    return false;
   }
 }
 

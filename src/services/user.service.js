@@ -228,13 +228,17 @@ class UserService {
       email: { $regex: `^${normalizedEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' },
     }).select('+password +inviteToken +inviteTokenExpires');
 
-    // Re-send when pending OR never logged in (orphans from live timeouts / old invites)
+    // Re-send when pending, never logged in, or Super Admin resets a stuck invite
     const canReinvite =
       Boolean(existingUser) &&
-      (existingUser.invitePending || !existingUser.lastLoginAt);
+      (existingUser.invitePending ||
+        !existingUser.lastLoginAt ||
+        (actor.role === ROLES.SUPER_ADMIN && existingUser.role !== ROLES.SUPER_ADMIN));
 
     if (existingUser && !canReinvite) {
-      throw ApiError.conflict('A user with this email already exists');
+      throw ApiError.conflict(
+        'A user with this email already exists and has already joined. Deactivate them first if you need to re-invite.'
+      );
     }
     const isReinvite = Boolean(existingUser && canReinvite);
 
@@ -368,18 +372,57 @@ class UserService {
       await existingUser.save();
       user = existingUser;
     } else {
-      user = await userRepository.create({
-        name: displayName,
-        email: normalizedEmail,
-        password: temporaryPassword,
-        role: role || ROLES.EMPLOYEE,
-        jobTitle: resolvedJobTitle || null,
-        department: resolvedDepartment,
-        invitePending: true,
-        invitedBy: actor.id,
-        inviteToken: inviteHashed,
-        inviteTokenExpires: inviteExpires,
-      });
+      try {
+        user = await userRepository.create({
+          name: displayName,
+          email: normalizedEmail,
+          password: temporaryPassword,
+          role: role || ROLES.EMPLOYEE,
+          jobTitle: resolvedJobTitle || null,
+          department: resolvedDepartment,
+          invitePending: true,
+          invitedBy: actor.id,
+          inviteToken: inviteHashed,
+          inviteTokenExpires: inviteExpires,
+        });
+      } catch (createErr) {
+        // Race or duplicate from a prior failed live invite — load and re-send
+        if (createErr?.code === 11000) {
+          const dup = await User.findOne({
+            email: {
+              $regex: `^${normalizedEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`,
+              $options: 'i',
+            },
+          }).select('+password +inviteToken +inviteTokenExpires');
+          const dupCanReinvite =
+            dup &&
+            (dup.invitePending ||
+              !dup.lastLoginAt ||
+              (actor.role === ROLES.SUPER_ADMIN && dup.role !== ROLES.SUPER_ADMIN));
+          if (dup && dupCanReinvite) {
+            dup.name = displayName;
+            dup.password = temporaryPassword;
+            dup.role = role || ROLES.EMPLOYEE;
+            dup.jobTitle = resolvedJobTitle || dup.jobTitle || null;
+            dup.department = resolvedDepartment;
+            dup.invitePending = true;
+            dup.invitedBy = actor.id;
+            dup.inviteToken = inviteHashed;
+            dup.inviteTokenExpires = inviteExpires;
+            dup.isActive = true;
+            await dup.save();
+            user = dup;
+          } else {
+            throw ApiError.conflict('A user with this email already exists');
+          }
+        } else {
+          throw createErr;
+        }
+      }
+    }
+
+    if (!user) {
+      throw ApiError.internal('Failed to create invite user');
     }
 
     if (resolvedTeamId) {

@@ -16,21 +16,19 @@ let activeProvider = null;
 let resendDomainCache = null;
 const RESEND_DOMAIN_CACHE_MS = 5 * 60 * 1000;
 const RESEND_TEST_FROM = 'BIWORKSPACE <onboarding@resend.dev>';
-/** Official BIWORKSPACE sending domain — never fall back to legacy brands */
+/** Only official BIWORKSPACE sender — never houseofchilli.pk or other domains */
 const PRIMARY_SEND_DOMAIN = 'bicomworkspace.com';
-const BLOCKED_FALLBACK_DOMAINS = /houseofchilli\.pk$/i;
+const PRIMARY_FROM_EMAIL = `noreply@${PRIMARY_SEND_DOMAIN}`;
 
 function cleanSecret(value) {
   if (value == null) return value;
   let s = String(value).trim();
-  // Strip wrapping quotes (Render / .env often store "value" literally)
   if (
     (s.startsWith('"') && s.endsWith('"')) ||
     (s.startsWith("'") && s.endsWith("'"))
   ) {
     s = s.slice(1, -1);
   }
-  // Second pass if double-quoted
   if (
     (s.startsWith('"') && s.endsWith('"')) ||
     (s.startsWith("'") && s.endsWith("'"))
@@ -43,7 +41,6 @@ function cleanSecret(value) {
   return s;
 }
 
-/** Prefer SMTP_PASS_B64 when set — avoids # truncation in env files / dashboards */
 function resolveSmtpPass() {
   const b64 = cleanSecret(env.SMTP_PASS_B64);
   if (b64) {
@@ -63,20 +60,15 @@ function resetTransporter() {
   resendDomainCache = null;
 }
 
-/** Never send as the old House of Chilli / outdated mailboxes */
 const LEGACY_FROM_RE = /houseofchilli\.pk|tasksmtp@bicommunications\.ae/i;
 
 function preferredFromAddress() {
-  const smtpUser = cleanSecret(env.SMTP_USER);
-  if (smtpUser) return `BIWORKSPACE <${smtpUser}>`;
-  return 'BIWORKSPACE <noreply@bicomworkspace.com>';
+  return `BIWORKSPACE <${PRIMARY_FROM_EMAIL}>`;
 }
 
 function parseFromAddress(fromValue) {
-  // Always strip Render/dashboard wrapping quotes first
   let raw = cleanSecret(fromValue) || cleanSecret(env.EMAIL_FROM) || preferredFromAddress();
 
-  // Render/shell often mangles unquoted EMAIL_FROM=Name <email> — recover from SMTP_USER
   if (LEGACY_FROM_RE.test(String(raw)) || !String(raw).includes('@')) {
     const preferred = preferredFromAddress();
     if (LEGACY_FROM_RE.test(String(raw))) {
@@ -119,11 +111,7 @@ function isSmtpReady() {
   return Boolean(env.SMTP_HOST && cleanSecret(env.SMTP_USER) && resolveSmtpPass());
 }
 
-/**
- * EMAIL_PROVIDER controls the primary channel:
- *   resend | brevo | smtp | auto
- * auto = Resend → Brevo → SMTP (Gmail often drops unauthenticated cPanel SMTP).
- */
+
 function resolveEmailProvider() {
   const forced = String(env.EMAIL_PROVIDER || 'auto').trim().toLowerCase();
   const resendKey = cleanSecret(env.RESEND_API_KEY);
@@ -250,68 +238,31 @@ async function listVerifiedResendDomains(apiKey) {
   }
 }
 
-function domainOfEmail(email) {
-  const parts = String(email || '').split('@');
-  return parts.length === 2 ? parts[1].toLowerCase() : '';
-}
-
 /**
- * Prefer noreply@bicomworkspace.com once that domain is verified on Resend.
- * Never send as houseofchilli.pk. Use onboarding@resend.dev only if primary is unverified.
+ * Resend: only noreply@bicomworkspace.com when verified.
+ * Never houseofchilli.pk or any other domain — matches local BIWORKSPACE setup.
  */
 async function resolveResendFrom(apiKey) {
-  const fromInfo = parseFromAddress(preferredFromAddress());
-  let domain = domainOfEmail(fromInfo.email);
   const verified = await listVerifiedResendDomains(apiKey);
 
-  // Always prefer the official BIWORKSPACE domain when it is verified
   if (verified.has(PRIMARY_SEND_DOMAIN)) {
-    const email =
-      domain === PRIMARY_SEND_DOMAIN && fromInfo.email
-        ? fromInfo.email
-        : `noreply@${PRIMARY_SEND_DOMAIN}`;
-    const name = fromInfo.name || 'BIWORKSPACE';
-    logger.info(`Resend From locked to ${name} <${email}> (verified ${PRIMARY_SEND_DOMAIN})`);
-    return {
-      name,
-      email,
-      formatted: `${name} <${email}>`,
-      verifiedDomain: true,
-      temporaryDomain: false,
-    };
-  }
-
-  if (domain && verified.has(domain) && !BLOCKED_FALLBACK_DOMAINS.test(domain)) {
-    return { ...fromInfo, verifiedDomain: true, temporaryDomain: false };
-  }
-
-  const fallbackDomain = [...verified].find(
-    (d) => d && d !== domain && !BLOCKED_FALLBACK_DOMAINS.test(d)
-  );
-  if (fallbackDomain) {
-    const email = `noreply@${fallbackDomain}`;
-    logger.warn(
-      `Resend domain "${PRIMARY_SEND_DOMAIN}" not verified yet — temporarily sending as ${email}`
-    );
+    logger.info(`Resend From locked to BIWORKSPACE <${PRIMARY_FROM_EMAIL}> (verified)`);
     return {
       name: 'BIWORKSPACE',
-      email,
-      formatted: `BIWORKSPACE <${email}>`,
+      email: PRIMARY_FROM_EMAIL,
+      formatted: `BIWORKSPACE <${PRIMARY_FROM_EMAIL}>`,
       verifiedDomain: true,
-      temporaryDomain: true,
     };
   }
 
   logger.warn(
-    `Resend domain "${PRIMARY_SEND_DOMAIN}" not verified — sending as onboarding@resend.dev (account inbox only). ` +
-      `Do not use houseofchilli.pk.`
+    `Resend: ${PRIMARY_SEND_DOMAIN} not verified — using onboarding@resend.dev until DNS is verified at resend.com/domains`
   );
   return {
     name: 'BIWORKSPACE',
     email: 'onboarding@resend.dev',
     formatted: RESEND_TEST_FROM,
     verifiedDomain: false,
-    temporaryDomain: false,
   };
 }
 
@@ -551,8 +502,7 @@ async function sendMail({ to, subject, html, text, replyTo }) {
     const isResendRecipientLimit = /only send testing emails to your own email/i.test(err.message);
     const forcedResend = String(env.EMAIL_PROVIDER || '').toLowerCase() === 'resend';
 
-    // Do not fall back to unreliable cPanel SMTP when Resend is the chosen provider —
-    // that "succeeds" on the server but often never reaches Gmail inboxes.
+   
     if (forcedResend || isResendRecipientLimit) {
       resetTransporter();
       if (isResendRecipientLimit) {
@@ -595,12 +545,30 @@ async function verifySmtpConnection() {
   }
 
   if (provider === 'resend') {
+    const apiKey = cleanSecret(env.RESEND_API_KEY);
+    let domainVerified = false;
+    let fromEmail = PRIMARY_FROM_EMAIL;
+    if (apiKey) {
+      try {
+        const verified = await listVerifiedResendDomains(apiKey);
+        domainVerified = verified.has(PRIMARY_SEND_DOMAIN);
+        fromEmail = domainVerified ? PRIMARY_FROM_EMAIL : 'onboarding@resend.dev';
+      } catch {
+        /* keep defaults */
+      }
+    }
     lastSmtpError = null;
     return {
-      ok: true,
-      reason: 'Resend API key configured',
+      ok: Boolean(apiKey),
+      reason: apiKey
+        ? domainVerified
+          ? `${PRIMARY_SEND_DOMAIN} verified — sends as ${fromEmail}`
+          : `${PRIMARY_SEND_DOMAIN} not verified on Resend — verify at resend.com/domains`
+        : 'RESEND_API_KEY missing',
       provider: 'resend',
-      user: parseFromAddress(preferredFromAddress()).email,
+      user: fromEmail,
+      domainVerified,
+      sendDomain: PRIMARY_SEND_DOMAIN,
     };
   }
 

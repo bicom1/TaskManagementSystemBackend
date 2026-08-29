@@ -80,7 +80,7 @@ app.get('/health', (req, res) =>
     status: 'ok',
     uptime: process.uptime(),
     // Bump when deploying so you can confirm Render picked up this build
-    version: 'invite-resend-2026-08-29',
+    version: 'invite-resend-await-2026-08-29',
     email: {
       provider: getActiveEmailProvider(),
       lastError: getLastSmtpError() || null,

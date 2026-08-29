@@ -228,16 +228,17 @@ class UserService {
       email: { $regex: `^${normalizedEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' },
     }).select('+password +inviteToken +inviteTokenExpires');
 
-    // Re-send when pending, never logged in, or Super Admin resets a stuck invite
+    // Re-send invite when user never finished joining (stuck after failed live email/SMTP)
     const canReinvite =
       Boolean(existingUser) &&
-      (existingUser.invitePending ||
+      (existingUser.invitePending === true ||
         !existingUser.lastLoginAt ||
+        existingUser.isActive === false ||
         (actor.role === ROLES.SUPER_ADMIN && existingUser.role !== ROLES.SUPER_ADMIN));
 
     if (existingUser && !canReinvite) {
       throw ApiError.conflict(
-        'A user with this email already exists and has already joined. Deactivate them first if you need to re-invite.'
+        'A user with this email already exists and has already joined. Deactivate them in Teams first, then invite again.'
       );
     }
     const isReinvite = Boolean(existingUser && canReinvite);
@@ -396,8 +397,9 @@ class UserService {
           }).select('+password +inviteToken +inviteTokenExpires');
           const dupCanReinvite =
             dup &&
-            (dup.invitePending ||
+            (dup.invitePending === true ||
               !dup.lastLoginAt ||
+              dup.isActive === false ||
               (actor.role === ROLES.SUPER_ADMIN && dup.role !== ROLES.SUPER_ADMIN));
           if (dup && dupCanReinvite) {
             dup.name = displayName;
@@ -461,15 +463,10 @@ class UserService {
       emailTo: normalizedEmail,
     };
 
-    // Return invite link immediately — email runs in background (avoids live timeouts)
-    let emailFrom =
-      (env.SMTP_USER && `BIWORKSPACE <${String(env.SMTP_USER).replace(/^["']|["']$/g, '')}>`) ||
-      env.EMAIL_FROM ||
-      'BIWORKSPACE <noreply@bicomworkspace.com>';
+    // Prefer official BIWORKSPACE sender — Resend uses noreply@bicomworkspace.com when verified
+    let emailFrom = env.EMAIL_FROM || 'BIWORKSPACE <noreply@bicomworkspace.com>';
     if (/houseofchilli\.pk|tasksmtp@bicommunications\.ae/i.test(String(emailFrom))) {
-      emailFrom = env.SMTP_USER
-        ? `BIWORKSPACE <${String(env.SMTP_USER).replace(/^["']|["']$/g, '')}>`
-        : 'BIWORKSPACE <noreply@bicomworkspace.com>';
+      emailFrom = 'BIWORKSPACE <noreply@bicomworkspace.com>';
     }
 
     const mailPayload = {
@@ -489,24 +486,44 @@ class UserService {
       ].join('\n'),
     };
 
-    // Fire-and-forget email — never block the invite response
-    sendMail(mailPayload)
-      .then((r) => {
-        logger.info(
-          `Invite email sent to ${normalizedEmail} via ${r?.provider} id=${r?.messageId || 'n/a'}`
-        );
-      })
-      .catch((err) => {
-        logger.error(`Invite email background failed for ${normalizedEmail}: ${err.message}`);
-      });
+    // Await Resend briefly (HTTPS works on Render). Never fail the invite if email fails —
+    // user + accept link are already created so a second click can re-send.
+    let emailDelivered = false;
+    let emailError = null;
+    let emailRedirectedTo = null;
+    let mailResult = null;
+    let via = 'none';
 
-    const emailDelivered = false;
-    const emailError = null;
-    const emailRedirectedTo = null;
-    const via = 'background';
-    const emailNote =
-      'Share the invite link below with them now (WhatsApp/email). A BIWORKSPACE email is also being sent in the background — check spam if it arrives.';
-    const mailResult = null;
+    try {
+      mailResult = await Promise.race([
+        sendMail(mailPayload),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Email send timed out after 12s')), 12_000)
+        ),
+      ]);
+      emailDelivered = Boolean(mailResult && !mailResult.logged);
+      via = mailResult?.provider || 'unknown';
+      emailRedirectedTo = mailResult?.redirectedTo || null;
+      if (mailResult?.from) emailFrom = mailResult.from;
+      if (mailResult?.logged) {
+        emailError = 'Email provider is not configured on this server';
+        emailDelivered = false;
+      }
+    } catch (err) {
+      emailError = err.message || 'Email delivery failed';
+      logger.error(`Invite email failed for ${normalizedEmail}: ${emailError}`);
+      // Still fire-and-forget a background retry (does not block response)
+      sendMail(mailPayload).catch((retryErr) => {
+        logger.error(`Invite email retry failed for ${normalizedEmail}: ${retryErr.message}`);
+      });
+    }
+
+    const emailNote = emailDelivered
+      ? isReinvite
+        ? 'Invite email re-sent from BIWORKSPACE. Check inbox/spam, or share the link below.'
+        : 'Invite email sent from BIWORKSPACE. Check inbox/spam, or share the link below.'
+      : `Invite created, but email was not delivered (${emailError || 'unknown'}). Share the direct link below on WhatsApp. On live, set RESEND_API_KEY + EMAIL_PROVIDER=resend on Render (SMTP does not work there).`;
+
 
     await notificationService
       .notify({

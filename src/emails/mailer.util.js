@@ -158,7 +158,7 @@ function resolveEmailProvider() {
     return 'none';
   }
 
-  // auto: prefer Resend (works on Render), then Brevo, then SMTP (local / non-Render only)
+  // auto / missing: prefer Resend everywhere when key is set (works on Render + local)
   if (resendKey) return 'resend';
   if (brevoKey) return 'brevo';
   if (smtpReady) return 'smtp';

@@ -79,7 +79,8 @@ app.get('/health', (req, res) =>
   res.status(200).json({
     status: 'ok',
     uptime: process.uptime(),
-    version: 'email-bicom-2026-08-28',
+    // Bump when deploying so you can confirm Render picked up this build
+    version: 'notify-parity-2026-08-29',
     email: {
       provider: getActiveEmailProvider(),
       lastError: getLastSmtpError() || null,

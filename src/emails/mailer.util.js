@@ -111,16 +111,33 @@ function isSmtpReady() {
   return Boolean(env.SMTP_HOST && cleanSecret(env.SMTP_USER) && resolveSmtpPass());
 }
 
+/** Render blocks/unreliably resolves custom SMTP hosts (EAI_AGAIN mail.*). Use API mail there. */
+function isRenderHost() {
+  return (
+    process.env.RENDER === 'true' ||
+    Boolean(process.env.RENDER_SERVICE_ID) ||
+    Boolean(process.env.RENDER_EXTERNAL_URL)
+  );
+}
+
+function smtpAllowed() {
+  // Explicit opt-in only on Render — DNS to mail.bicomworkspace.com fails there
+  if (isRenderHost()) {
+    return String(env.EMAIL_PROVIDER || '').trim().toLowerCase() === 'smtp';
+  }
+  return true;
+}
 
 function resolveEmailProvider() {
   const forced = String(env.EMAIL_PROVIDER || 'auto').trim().toLowerCase();
   const resendKey = cleanSecret(env.RESEND_API_KEY);
   const brevoKey = cleanSecret(env.BREVO_API_KEY);
-  const smtpReady = isSmtpReady();
+  const smtpReady = isSmtpReady() && smtpAllowed();
 
   if (forced === 'resend') {
     if (resendKey) return 'resend';
-    if (smtpReady) {
+    // On Render never silently fall back to SMTP (causes getaddrinfo EAI_AGAIN)
+    if (smtpReady && !isRenderHost()) {
       logger.warn('EMAIL_PROVIDER=resend but RESEND_API_KEY missing — using SMTP');
       return 'smtp';
     }
@@ -128,20 +145,20 @@ function resolveEmailProvider() {
   }
   if (forced === 'brevo') {
     if (brevoKey) return 'brevo';
-    if (smtpReady) {
+    if (smtpReady && !isRenderHost()) {
       logger.warn('EMAIL_PROVIDER=brevo but BREVO_API_KEY missing — using SMTP');
       return 'smtp';
     }
     return 'none';
   }
   if (forced === 'smtp') {
-    if (smtpReady) return 'smtp';
+    if (isSmtpReady()) return 'smtp';
     if (resendKey) return 'resend';
     if (brevoKey) return 'brevo';
     return 'none';
   }
 
-  // auto: prefer Resend (reliable Gmail delivery), then Brevo, then SMTP
+  // auto: prefer Resend (works on Render), then Brevo, then SMTP (local / non-Render only)
   if (resendKey) return 'resend';
   if (brevoKey) return 'brevo';
   if (smtpReady) return 'smtp';
@@ -472,8 +489,11 @@ async function sendMail({ to, subject, html, text, replyTo }) {
   activeProvider = provider;
 
   if (provider === 'none') {
+    const onRender = isRenderHost();
     throw new Error(
-      'No email provider configured. Set RESEND_API_KEY (recommended), BREVO_API_KEY, or SMTP_* in backend/.env'
+      onRender
+        ? 'Email not configured on Render. Set RESEND_API_KEY and EMAIL_PROVIDER=resend (SMTP to mail.bicomworkspace.com does not work on Render).'
+        : 'No email provider configured. Set RESEND_API_KEY (recommended), BREVO_API_KEY, or SMTP_* in backend/.env'
     );
   }
 
@@ -501,9 +521,10 @@ async function sendMail({ to, subject, html, text, replyTo }) {
 
     const isResendRecipientLimit = /only send testing emails to your own email/i.test(err.message);
     const forcedResend = String(env.EMAIL_PROVIDER || '').toLowerCase() === 'resend';
+    const dnsFail = /EAI_AGAIN|ENOTFOUND|getaddrinfo/i.test(err.message || '');
 
-   
-    if (forcedResend || isResendRecipientLimit) {
+    // Never fall back to SMTP on Render — causes getaddrinfo EAI_AGAIN on mail.bicomworkspace.com
+    if (forcedResend || isResendRecipientLimit || isRenderHost()) {
       resetTransporter();
       if (isResendRecipientLimit) {
         throw new Error(
@@ -512,10 +533,16 @@ async function sendMail({ to, subject, html, text, replyTo }) {
             'EMAIL_FROM="BIWORKSPACE <noreply@bicomworkspace.com>" so invites reach any user.'
         );
       }
+      if (dnsFail && /mail\.|smtp/i.test(err.message || '')) {
+        throw new Error(
+          'SMTP DNS failed on this host (Render cannot reach mail.bicomworkspace.com). ' +
+            'Set RESEND_API_KEY + EMAIL_PROVIDER=resend on Render, then redeploy.'
+        );
+      }
       throw err;
     }
 
-    if ((provider === 'resend' || provider === 'brevo') && isSmtpReady()) {
+    if ((provider === 'resend' || provider === 'brevo') && isSmtpReady() && smtpAllowed()) {
       logger.warn(`${provider} failed (${err.message}) — falling back to SMTP`);
       try {
         const fallback = await sendViaSmtp({ to: recipient, subject, html, text, replyTo });
@@ -531,6 +558,11 @@ async function sendMail({ to, subject, html, text, replyTo }) {
       }
     }
     resetTransporter();
+    if (dnsFail) {
+      throw new Error(
+        `Email DNS failed (${err.message}). On live/Render use RESEND_API_KEY instead of SMTP.`
+      );
+    }
     throw err;
   }
 }

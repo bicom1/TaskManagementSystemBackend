@@ -40,4 +40,9 @@ async function addMember(req, res) {
   res.status(httpStatus.StatusCodes.OK).json({ success: true, data: project });
 }
 
-module.exports = { create, list, getById, update, addMember };
+async function remove(req, res) {
+  const result = await projectService.delete(req.params.id, actorFrom(req));
+  res.status(httpStatus.StatusCodes.OK).json({ success: true, data: result });
+}
+
+module.exports = { create, list, getById, update, addMember, remove };

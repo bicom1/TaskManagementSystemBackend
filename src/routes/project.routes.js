@@ -29,5 +29,10 @@ router.post(
   requirePermission(PERMISSIONS.PROJECT_EDIT),
   controller.addMember
 );
+router.delete(
+  '/:id',
+  requirePermission(PERMISSIONS.PROJECT_EDIT),
+  controller.remove
+);
 
 module.exports = router;

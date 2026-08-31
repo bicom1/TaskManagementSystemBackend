@@ -195,6 +195,7 @@ class ProjectService {
     result.data = (result.data || []).map((p) => {
       const obj = p.toObject ? p.toObject() : { ...p };
       obj.openTaskCount = countMap.get(String(obj._id)) || 0;
+      obj.canManage = policy.getProjectAccess(actor, p) === ACCESS.MANAGE;
       return obj;
     });
 
@@ -296,6 +297,35 @@ class ProjectService {
     }
 
     return project;
+  }
+
+  async delete(id, actorInput) {
+    const actor = await resolveActor(actorInput);
+    policy.assertPermission(actor, PERMISSIONS.PROJECT_EDIT);
+
+    const existing = await projectRepository.findById(id, {
+      populate: [{ path: 'team', select: 'lead members department' }],
+    });
+    if (!existing) throw ApiError.notFound('Project not found');
+    policy.assertProjectManage(actor, existing);
+
+    const Task = require('../models/task.model');
+    await Task.updateMany({ project: id }, { isArchived: true });
+    await Conversation.updateMany({ relatedProject: id }, { isActive: false });
+    await projectRepository.deleteById(id);
+    await invalidateByPrefix(`project:${id}`);
+
+    emitProjectEvent(
+      'project:deleted',
+      { _id: id, name: existing.name },
+      {
+        teamId: existing.team?._id || existing.team,
+        ownerId: existing.owner,
+        memberIds: existing.members,
+      }
+    );
+
+    return { id, name: existing.name };
   }
 
   async #notifyProjectMembers({ project, actorId, type, message, emailSubject }) {

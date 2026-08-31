@@ -85,7 +85,7 @@ app.get('/health', (req, res) =>
     status: 'ok',
     uptime: process.uptime(),
     // Bump when deploying so you can confirm Render picked up this build
-    version: 'oauth-state-2026-08-31',
+    version: 'google-profile-2026-08-31',
     clientUrl: getClientBaseUrl(),
     email: {
       provider: getActiveEmailProvider(),

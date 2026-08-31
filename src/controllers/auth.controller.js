@@ -36,13 +36,26 @@ function resolveOAuthClientUrl(storedUrl) {
   return getClientBaseUrl();
 }
 
-function loginRedirect(res, accessToken, errorCode, clientBase) {
+function loginRedirect(res, accessToken, errorCode, clientBase, user = null) {
   const base = resolveOAuthClientUrl(clientBase);
   if (errorCode) {
     return res.redirect(`${base}/login?googleError=${encodeURIComponent(errorCode)}`);
   }
   const url = new URL(`${base}/auth/google/callback`);
   url.searchParams.set('accessToken', accessToken);
+  if (user) {
+    const profile = Buffer.from(
+      JSON.stringify({
+        _id: user._id || user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        avatarUrl: user.avatarUrl ?? null,
+        jobTitle: user.jobTitle ?? null,
+      })
+    ).toString('base64url');
+    url.searchParams.set('profile', profile);
+  }
   return res.redirect(url.toString());
 }
 
@@ -144,9 +157,9 @@ async function googleCallback(req, res) {
       return loginRedirect(res, null, 'invalid_state', savedClientUrl);
     }
 
-    const { accessToken, refreshToken } = await authService.googleAuthWithCode(String(code));
-    setRefreshCookie(res, refreshToken);
-    return loginRedirect(res, accessToken, null, savedClientUrl);
+    const auth = await authService.googleAuthWithCode(String(code));
+    setRefreshCookie(res, auth.refreshToken);
+    return loginRedirect(res, auth.accessToken, null, savedClientUrl, auth.user);
   } catch (err) {
     const message = err?.message || 'google_failed';
     const savedClientUrl = req.cookies[GOOGLE_CLIENT_URL_COOKIE];

@@ -81,7 +81,7 @@ app.get('/health', (req, res) =>
     status: 'ok',
     uptime: process.uptime(),
     // Bump when deploying so you can confirm Render picked up this build
-    version: 'email-links-2026-08-30',
+    version: 'task-notify-2026-08-30',
     clientUrl: getClientBaseUrl(),
     email: {
       provider: getActiveEmailProvider(),

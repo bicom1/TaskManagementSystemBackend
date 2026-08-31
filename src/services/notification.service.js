@@ -34,19 +34,7 @@ async function deliverNotificationEmail({ to, recipientName, message, actionUrl,
     subject: subject || 'You have a new update — BIWORKSPACE',
   };
 
-  let queued = false;
-  try {
-    queued = await enqueueEmail('notification', payload);
-  } catch (err) {
-    queued = false;
-    logger.warn(`Notification email queue failed: ${err.message}`);
-  }
-
-  if (queued) {
-    logger.debug(`Notification email queued → ${to} (${actionUrl})`);
-    return;
-  }
-
+  // Direct send first — instant on live via Resend; queue is fallback only
   try {
     await sendMail({
       to,
@@ -54,8 +42,18 @@ async function deliverNotificationEmail({ to, recipientName, message, actionUrl,
       html: notificationEmail(payload),
     });
     logger.info(`Notification email sent (direct) → ${to} (${actionUrl})`);
+    return;
+  } catch (directErr) {
+    logger.warn(`Notification direct email failed → ${to}: ${directErr.message}`);
+  }
+
+  try {
+    const queued = await enqueueEmail('notification', payload);
+    if (queued) {
+      logger.info(`Notification email queued (fallback) → ${to}`);
+    }
   } catch (err) {
-    logger.warn(`Notification email send failed → ${to}: ${err.message}`);
+    logger.warn(`Notification email queue failed → ${to}: ${err.message}`);
   }
 }
 
@@ -81,8 +79,18 @@ class NotificationService {
       entityId,
     });
 
+    let socketPayload = notification;
     try {
-      getIO().to(`user:${recipient}`).emit('notification:new', notification);
+      const full = await notificationRepository.findById(notification._id, {
+        populate: [{ path: 'sender', select: 'name avatarUrl' }],
+      });
+      if (full) socketPayload = full;
+    } catch {
+      // use bare notification
+    }
+
+    try {
+      getIO().to(`user:${String(recipient)}`).emit('notification:new', socketPayload);
     } catch {
       // Socket.IO not initialized — skip silently
     }
@@ -110,7 +118,14 @@ class NotificationService {
   }
 
   async list(userId, { page, limit }) {
-    return notificationRepository.findPaginated({ recipient: userId }, { page, limit });
+    return notificationRepository.findPaginated(
+      { recipient: userId },
+      {
+        page,
+        limit,
+        populate: [{ path: 'sender', select: 'name avatarUrl' }],
+      }
+    );
   }
 
   async markAllRead(userId) {

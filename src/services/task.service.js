@@ -112,7 +112,7 @@ class TaskService {
     }
 
     if (data.assignees?.length) {
-      await this.#notifyAssignees(populated || task, actorId);
+      await this.#notifyAssignees(populated || task, actorId, data.project);
     }
 
     emitTaskEvent('task:created', populated || task, data.project);
@@ -269,7 +269,11 @@ class TaskService {
     });
 
     if (task.assignees?.length) {
-      await this.#notifyAssignees(task, actor.id);
+      await this.#notifyAssignees(
+        task,
+        actor.id,
+        existing.project?._id || existing.project
+      );
     }
 
     emitTaskEvent('task:updated', task, existing.project);
@@ -443,8 +447,14 @@ class TaskService {
       const newlyAssigned = nextIds.filter((aid) => !previousAssigneeIds.includes(aid));
       if (newlyAssigned.length) {
         await this.#notifyAssignees(
-          { ...(task.toObject?.() || task), assignees: newlyAssigned, title: task.title, _id: task._id },
-          actorId
+          {
+            ...(task.toObject?.() || task),
+            assignees: newlyAssigned,
+            title: task.title,
+            _id: task._id,
+          },
+          actorId,
+          existing.project?._id || existing.project
         );
       }
       await activityService.record({
@@ -593,9 +603,11 @@ class TaskService {
     return task;
   }
 
-  async #notifyAssignees(task, actorId) {
+  async #notifyAssignees(task, actorId, projectIdOverride = null) {
     const actorKey = String(actorId);
-    const projectId = String(task.project?._id || task.project || '');
+    const projectId = String(
+      projectIdOverride || task.project?._id || task.project || ''
+    );
     const assigneeIds = [...new Set((task.assignees || []).map((a) => String(a._id || a)))].filter(
       Boolean
     );

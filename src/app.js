@@ -22,7 +22,11 @@ const {
   getLastSmtpError,
   verifyEmailConnection,
 } = require('./emails/mailer.util');
-const { getClientBaseUrl } = require('./utils/clientUrl.util');
+const {
+  getClientBaseUrl,
+  isAllowedClientOrigin,
+  PRODUCTION_APP_FALLBACK,
+} = require('./utils/clientUrl.util');
 
 const app = express();
 
@@ -35,7 +39,7 @@ app.use(
     origin(origin, callback) {
       const allowed = new Set([
         env.CLIENT_URL,
-        'https://task-management-system-frontend-z23.vercel.app',
+        PRODUCTION_APP_FALLBACK,
         'http://localhost:5173',
         'http://127.0.0.1:5173',
       ]);
@@ -44,7 +48,7 @@ app.use(
         typeof origin === 'string' &&
         /^https:\/\/task-management-system-frontend[\w-]*\.vercel\.app$/i.test(origin);
 
-      if (!origin || allowed.has(origin) || isVercelPreview) {
+      if (!origin || allowed.has(origin) || isVercelPreview || isAllowedClientOrigin(origin)) {
         return callback(null, true);
       }
       return callback(new Error(`CORS blocked for origin: ${origin}`));
@@ -81,7 +85,7 @@ app.get('/health', (req, res) =>
     status: 'ok',
     uptime: process.uptime(),
     // Bump when deploying so you can confirm Render picked up this build
-    version: 'socket-live-2026-08-31',
+    version: 'oauth-dynamic-2026-08-31',
     clientUrl: getClientBaseUrl(),
     email: {
       provider: getActiveEmailProvider(),

@@ -1,18 +1,27 @@
 const httpStatus = require('http-status-codes');
 const authService = require('../services/auth.service');
 const env = require('../config/env');
-const { getClientBaseUrl } = require('../utils/clientUrl.util');
+const {
+  getClientBaseUrl,
+  resolveClientUrlFromRequest,
+  isAllowedClientOrigin,
+  normalizeUrl,
+} = require('../utils/clientUrl.util');
 
 const REFRESH_COOKIE_NAME = 'refreshToken';
 const GOOGLE_STATE_COOKIE = 'google_oauth_state';
+const GOOGLE_CLIENT_URL_COOKIE = 'google_oauth_client_url';
 
 // Cross-site (Vercel frontend → Render API) needs SameSite=None + Secure in production
 const isProd = env.NODE_ENV === 'production';
-const refreshCookieOptions = {
+const oauthCookieOptions = {
   httpOnly: true,
   secure: isProd,
   sameSite: isProd ? 'none' : 'lax',
   path: '/api/v1/auth',
+};
+const refreshCookieOptions = {
+  ...oauthCookieOptions,
   maxAge: 7 * 24 * 60 * 60 * 1000,
 };
 
@@ -20,8 +29,15 @@ function setRefreshCookie(res, token) {
   res.cookie(REFRESH_COOKIE_NAME, token, refreshCookieOptions);
 }
 
-function loginRedirect(res, accessToken, errorCode) {
-  const base = getClientBaseUrl();
+function resolveOAuthClientUrl(storedUrl) {
+  if (storedUrl && isAllowedClientOrigin(storedUrl)) {
+    return normalizeUrl(storedUrl);
+  }
+  return getClientBaseUrl();
+}
+
+function loginRedirect(res, accessToken, errorCode, clientBase) {
+  const base = resolveOAuthClientUrl(clientBase);
   if (errorCode) {
     return res.redirect(`${base}/login?googleError=${encodeURIComponent(errorCode)}`);
   }
@@ -91,13 +107,17 @@ async function googleAuth(req, res) {
 /** Redirect browser to Google consent screen */
 async function googleStart(req, res) {
   const state = authService.createOAuthState();
+  const clientUrl = resolveClientUrlFromRequest(req);
+
   res.cookie(GOOGLE_STATE_COOKIE, state, {
-    httpOnly: true,
-    sameSite: isProd ? 'none' : 'lax',
-    secure: isProd,
+    ...oauthCookieOptions,
     maxAge: 10 * 60 * 1000,
-    path: '/api/v1/auth',
   });
+  res.cookie(GOOGLE_CLIENT_URL_COOKIE, clientUrl, {
+    ...oauthCookieOptions,
+    maxAge: 10 * 60 * 1000,
+  });
+
   const url = authService.getGoogleAuthUrl(state);
   res.redirect(url);
 }
@@ -108,22 +128,28 @@ async function googleCallback(req, res) {
     const { code, state, error } = req.query;
 
     if (error) {
-      return loginRedirect(res, null, String(error));
+      const savedClientUrl = req.cookies[GOOGLE_CLIENT_URL_COOKIE];
+      res.clearCookie(GOOGLE_CLIENT_URL_COOKIE, { path: '/api/v1/auth' });
+      return loginRedirect(res, null, String(error), savedClientUrl);
     }
 
     const savedState = req.cookies[GOOGLE_STATE_COOKIE];
+    const savedClientUrl = req.cookies[GOOGLE_CLIENT_URL_COOKIE];
     res.clearCookie(GOOGLE_STATE_COOKIE, { path: '/api/v1/auth' });
+    res.clearCookie(GOOGLE_CLIENT_URL_COOKIE, { path: '/api/v1/auth' });
 
     if (!code || !state || !savedState || state !== savedState) {
-      return loginRedirect(res, null, 'invalid_state');
+      return loginRedirect(res, null, 'invalid_state', savedClientUrl);
     }
 
     const { accessToken, refreshToken } = await authService.googleAuthWithCode(String(code));
     setRefreshCookie(res, refreshToken);
-    return loginRedirect(res, accessToken);
+    return loginRedirect(res, accessToken, null, savedClientUrl);
   } catch (err) {
     const message = err?.message || 'google_failed';
-    return loginRedirect(res, null, message);
+    const savedClientUrl = req.cookies[GOOGLE_CLIENT_URL_COOKIE];
+    res.clearCookie(GOOGLE_CLIENT_URL_COOKIE, { path: '/api/v1/auth' });
+    return loginRedirect(res, null, message, savedClientUrl);
   }
 }
 

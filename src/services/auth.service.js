@@ -19,7 +19,7 @@ class AuthService {
     const renderBase = String(process.env.RENDER_EXTERNAL_URL || '').trim().replace(/\/$/, '');
 
     // Never send localhost redirect to Google from production (causes redirect_uri_mismatch)
-    if (env.NODE_ENV === 'production') {
+    if (env.NODE_ENV === 'production' || String(process.env.RENDER_EXTERNAL_URL || '').trim()) {
       if (configured && !/localhost|127\.0\.0\.1/i.test(configured)) {
         return configured;
       }

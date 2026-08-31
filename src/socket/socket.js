@@ -4,20 +4,24 @@ const userRepository = require('../repositories/user.repository');
 const teamRepository = require('../repositories/team.repository');
 const env = require('../config/env');
 const logger = require('../config/logger');
+const {
+  isAllowedClientOrigin,
+  PRODUCTION_APP_FALLBACK,
+} = require('../utils/clientUrl.util');
 
 let io;
 
 function allowedOrigin(origin) {
   const allowed = new Set([
     env.CLIENT_URL,
-    'https://task-management-system-frontend-z23.vercel.app',
+    PRODUCTION_APP_FALLBACK,
     'http://localhost:5173',
     'http://127.0.0.1:5173',
   ]);
   const isVercelPreview =
     typeof origin === 'string' &&
     /^https:\/\/task-management-system-frontend[\w-]*\.vercel\.app$/i.test(origin);
-  return !origin || allowed.has(origin) || isVercelPreview;
+  return !origin || allowed.has(origin) || isVercelPreview || isAllowedClientOrigin(origin);
 }
 
 function initSocket(httpServer) {

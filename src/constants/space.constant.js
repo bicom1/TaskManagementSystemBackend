@@ -11,11 +11,9 @@ const SPACE_PERMISSIONS = Object.freeze({
 });
 
 const SPACE_VIEWS = Object.freeze({
+  CHANNEL: 'channel',
   LIST: 'list',
   BOARD: 'board',
-  CALENDAR: 'calendar',
-  DOCS: 'docs',
-  CHANNEL: 'channel',
 });
 
 const SPACE_CLICK_APPS = Object.freeze([
@@ -63,7 +61,7 @@ const WORKFLOW_TEMPLATES = Object.freeze({
     id: 'starter',
     name: 'Starter',
     description: 'For everyday tasks.',
-    defaultViews: [SPACE_VIEWS.LIST, SPACE_VIEWS.BOARD],
+    defaultViews: [SPACE_VIEWS.CHANNEL, SPACE_VIEWS.LIST, SPACE_VIEWS.BOARD],
     statuses: STATUS_PRESETS.starter,
     clickApps: [
       'tags',
@@ -80,7 +78,7 @@ const WORKFLOW_TEMPLATES = Object.freeze({
     id: 'marketing',
     name: 'Marketing Teams',
     description: 'Run effective campaigns.',
-    defaultViews: [SPACE_VIEWS.LIST, SPACE_VIEWS.BOARD, SPACE_VIEWS.CALENDAR],
+    defaultViews: [SPACE_VIEWS.CHANNEL, SPACE_VIEWS.LIST, SPACE_VIEWS.BOARD],
     statuses: STATUS_PRESETS.marketing,
     clickApps: [
       'tags',
@@ -95,7 +93,7 @@ const WORKFLOW_TEMPLATES = Object.freeze({
     id: 'project_management',
     name: 'Project Management',
     description: 'Plan, manage, and execute projects.',
-    defaultViews: [SPACE_VIEWS.LIST, SPACE_VIEWS.BOARD, SPACE_VIEWS.CALENDAR],
+    defaultViews: [SPACE_VIEWS.CHANNEL, SPACE_VIEWS.LIST, SPACE_VIEWS.BOARD],
     statuses: STATUS_PRESETS.project_management,
     clickApps: [...SPACE_CLICK_APPS],
   },
@@ -103,7 +101,7 @@ const WORKFLOW_TEMPLATES = Object.freeze({
     id: 'product_engineering',
     name: 'Product + Engineering',
     description: 'Streamline your product lifecycle.',
-    defaultViews: [SPACE_VIEWS.LIST, SPACE_VIEWS.BOARD],
+    defaultViews: [SPACE_VIEWS.CHANNEL, SPACE_VIEWS.LIST, SPACE_VIEWS.BOARD],
     statuses: STATUS_PRESETS.product_engineering,
     clickApps: [...SPACE_CLICK_APPS],
   },

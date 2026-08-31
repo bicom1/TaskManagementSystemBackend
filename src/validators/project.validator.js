@@ -47,12 +47,12 @@ const createProjectSchema = z.object({
       .optional(),
     statuses: z.array(statusSchema).min(1).max(12).optional(),
     defaultViews: z
-      .array(z.enum(['list', 'board', 'calendar', 'docs', 'channel']))
+      .array(z.enum(['channel', 'list', 'board']))
       .min(1)
       .max(8)
       .optional(),
     clickApps: z.array(z.string().trim().min(1).max(40)).optional(),
-    activeView: z.enum(['list', 'board', 'calendar', 'docs', 'channel']).optional(),
+    activeView: z.enum(['channel', 'list', 'board']).optional(),
   }),
 });
 

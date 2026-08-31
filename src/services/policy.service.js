@@ -397,25 +397,11 @@ function assertTaskManage(actor, task, project) {
  * Whether actor may assign/create tasks in a project (not just view).
  */
 function canAssignInProject(actor, project) {
-  if (!hasPermission(actor, PERMISSIONS.TASK_ASSIGN) && !hasPermission(actor, PERMISSIONS.TASK_CREATE)) {
-    return false;
-  }
+  if (!actor || !project) return false;
+  // Any authenticated role that can see the project may create/reassign tasks.
+  // Super Admin is notified separately on create/reassign.
   const access = getProjectAccess(actor, project);
-  if (access === ACCESS.MANAGE) return true;
-  // Anyone with create/assign who can view the project may add/edit/reassign
-  // (dept heads: SEO full manage; Dev/Designing view+edit; employees: own projects)
-  if (
-    access === ACCESS.VIEW &&
-    (hasPermission(actor, PERMISSIONS.TASK_CREATE) ||
-      hasPermission(actor, PERMISSIONS.TASK_ASSIGN) ||
-      actor.role === ROLES.DEPT_HEAD ||
-      actor.role === ROLES.EMPLOYEE ||
-      actor.role === ROLES.EXECUTIVE ||
-      actor.role === ROLES.TEAM_LEAD)
-  ) {
-    return true;
-  }
-  return false;
+  return access === ACCESS.MANAGE || access === ACCESS.VIEW;
 }
 
 module.exports = {

@@ -13,6 +13,7 @@ const { emitProjectEvent } = require('../socket/socket');
 const Conversation = require('../models/conversation.model');
 const notificationService = require('./notification.service');
 const { NOTIFICATION_TYPES } = require('../constants/notification.constant');
+const { notifySuperAdmins } = require('./notifySuperAdmins.util');
 
 async function resolveActor(actor) {
   if (actor?.context) return actor.context;
@@ -150,6 +151,15 @@ class ProjectService {
       emailSubject: `New project: ${project.name}`,
     });
 
+    await notifySuperAdmins({
+      actorId: actor.id,
+      type: NOTIFICATION_TYPES.PROJECT_CREATED,
+      message: `New project "${project.name}" was created`,
+      entityType: 'Project',
+      entityId: project._id,
+      emailSubject: `New project: ${project.name}`,
+    });
+
     return project;
   }
 
@@ -252,6 +262,15 @@ class ProjectService {
       teamId: existing.team?._id || existing.team,
       ownerId: project.owner,
       memberIds: project.members,
+    });
+
+    await notifySuperAdmins({
+      actorId: actor.id,
+      type: NOTIFICATION_TYPES.PROJECT_UPDATED,
+      message: `Project "${project.name}" was updated`,
+      entityType: 'Project',
+      entityId: project._id,
+      emailSubject: `Project updated: ${project.name}`,
     });
 
     return project;

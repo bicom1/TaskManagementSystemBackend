@@ -4,6 +4,7 @@ const Team = require('../models/team.model');
 const ApiError = require('../utils/ApiError.util');
 const notificationService = require('./notification.service');
 const { NOTIFICATION_TYPES } = require('../constants/notification.constant');
+const { notifySuperAdmins } = require('./notifySuperAdmins.util');
 const {
   getUserWorkspace,
   getUpcomingMeetingsForUser,
@@ -66,13 +67,24 @@ class MeetingService {
           notificationService.notify({
             recipient,
             sender: actorId,
-            type: NOTIFICATION_TYPES.MESSAGE_RECEIVED,
+            type: NOTIFICATION_TYPES.MEETING_SCHEDULED,
             message: `Meeting scheduled: ${title}`,
-            entityType: 'Project',
+            entityType: 'Meeting',
             entityId: meeting._id,
+            emailToo: true,
+            emailSubject: `Meeting: ${title}`,
           }).catch(() => {})
         )
     );
+
+    await notifySuperAdmins({
+      actorId,
+      type: NOTIFICATION_TYPES.MEETING_SCHEDULED,
+      message: `Meeting scheduled: "${title}"`,
+      entityType: 'Meeting',
+      entityId: meeting._id,
+      emailSubject: `Meeting scheduled: ${title}`,
+    });
 
     return Meeting.findById(meeting._id)
       .populate('team', 'name')

@@ -8,7 +8,7 @@ const notificationSchema = new mongoose.Schema(
     type: { type: String, enum: NOTIFICATION_TYPE_VALUES, required: true },
     message: { type: String, required: true, trim: true },
     // Polymorphic link back to the source entity (task, project, comment...)
-    entityType: { type: String, enum: ['Task', 'Project', 'Comment'], required: true },
+    entityType: { type: String, enum: ['Task', 'Project', 'Comment', 'Meeting'], required: true },
     entityId: { type: mongoose.Schema.Types.ObjectId, required: true },
     isRead: { type: Boolean, default: false },
   },

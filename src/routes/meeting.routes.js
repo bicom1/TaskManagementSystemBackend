@@ -2,8 +2,6 @@ const { Router } = require('express');
 const { z } = require('zod');
 const authenticate = require('../middlewares/auth.middleware');
 const validate = require('../middlewares/validate.middleware');
-const authorize = require('../middlewares/rbac.middleware');
-const { ROLES } = require('../constants/roles.constant');
 const meetingController = require('../controllers/meeting.controller');
 
 const router = Router();
@@ -48,14 +46,12 @@ router.get('/meetings/calendar', meetingController.calendarBoard);
 router.post('/meetings/ask', validate(askSchema), meetingController.ask);
 router.post(
   '/meetings',
-  authorize(ROLES.SUPER_ADMIN, ROLES.DEPT_HEAD, ROLES.TEAM_LEAD),
   validate(meetingSchema),
   meetingController.createMeeting
 );
 router.get('/locations', meetingController.listLocations);
 router.post(
   '/locations',
-  authorize(ROLES.SUPER_ADMIN, ROLES.DEPT_HEAD, ROLES.TEAM_LEAD),
   validate(locationSchema),
   meetingController.createLocation
 );

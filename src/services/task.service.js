@@ -13,6 +13,7 @@ const { APPROVAL_STATUS } = Task;
 const { resolveAutoStatus, nextInFlow } = require('./taskProgression.util');
 const { TASK_STATUS } = require('../constants/task.constant');
 const { emitTaskEvent } = require('../socket/socket');
+const { notifySuperAdmins } = require('./notifySuperAdmins.util');
 
 async function loadProjectScoped(projectId) {
   return projectRepository.findById(projectId, {
@@ -60,13 +61,8 @@ class TaskService {
       initialStatus = TASK_STATUS.TODO;
     }
 
-    // Any role with TASK_ASSIGN may assign to colleagues in any department.
-    if (data.assignees?.length && !policy.hasPermission(actor, PERMISSIONS.TASK_ASSIGN)) {
-      const onlySelf = data.assignees.every((a) => String(a) === String(actorId));
-      if (!onlySelf) {
-        throw ApiError.forbidden('You cannot assign tasks to other users');
-      }
-    }
+    // Any authenticated user who can create in this project may assign teammates.
+    // Super Admin is always notified (see notifySuperAdmins below).
 
     const task = await taskRepository.create({
       ...data,
@@ -114,6 +110,16 @@ class TaskService {
     if (data.assignees?.length) {
       await this.#notifyAssignees(populated || task, actorId, data.project);
     }
+
+    await notifySuperAdmins({
+      actorId,
+      type: NOTIFICATION_TYPES.TASK_CREATED,
+      message: `${actor.role === 'super_admin' ? 'A task' : 'New task'} "${task.title}" was created`,
+      entityType: 'Task',
+      entityId: task._id,
+      metadata: { projectId: String(data.project) },
+      emailSubject: `New task: ${task.title}`,
+    });
 
     emitTaskEvent('task:created', populated || task, data.project);
     return populated || task;
@@ -328,18 +334,6 @@ class TaskService {
     const project = existing.project;
     policy.assertTaskManage(actor, existing, project);
 
-    // Any role with TASK_ASSIGN may reassign across departments.
-
-    if (updates.assignees !== undefined && !policy.hasPermission(actor, PERMISSIONS.TASK_ASSIGN)) {
-      const next = (updates.assignees || []).map(String);
-      const prev = (existing.assignees || []).map((a) => String(a._id || a));
-      const changed =
-        next.length !== prev.length || next.some((id) => !prev.includes(id));
-      if (changed) {
-        throw ApiError.forbidden('You cannot reassign this task');
-      }
-    }
-
     if (
       existing.approvalStatus === APPROVAL_STATUS.PENDING &&
       updates.status &&
@@ -464,6 +458,21 @@ class TaskService {
         entityId: id,
         metadata: { assignees: nextIds, previous: previousAssigneeIds },
       });
+
+      const assigneesChanged =
+        nextIds.length !== previousAssigneeIds.length ||
+        nextIds.some((aid) => !previousAssigneeIds.includes(aid));
+      if (assigneesChanged) {
+        await notifySuperAdmins({
+          actorId,
+          type: NOTIFICATION_TYPES.TASK_ASSIGNED,
+          message: `Task "${task.title}" was reassigned`,
+          entityType: 'Task',
+          entityId: task._id,
+          metadata: { projectId: String(existing.project?._id || existing.project || '') },
+          emailSubject: `Task reassigned: ${task.title}`,
+        });
+      }
     }
 
     const trackedFields = [

@@ -22,6 +22,7 @@ const {
   getLastSmtpError,
   verifyEmailConnection,
 } = require('./emails/mailer.util');
+const { getClientBaseUrl } = require('./utils/clientUrl.util');
 
 const app = express();
 
@@ -80,7 +81,8 @@ app.get('/health', (req, res) =>
     status: 'ok',
     uptime: process.uptime(),
     // Bump when deploying so you can confirm Render picked up this build
-    version: 'invite-resend-await-2026-08-29',
+    version: 'email-links-2026-08-30',
+    clientUrl: getClientBaseUrl(),
     email: {
       provider: getActiveEmailProvider(),
       lastError: getLastSmtpError() || null,

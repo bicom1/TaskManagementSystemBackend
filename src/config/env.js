@@ -14,6 +14,8 @@ const envSchema = z.object({
 
   COOKIE_SECRET: z.string().min(1),
   CLIENT_URL: z.string().url().default('http://localhost:5173'),
+  /** Optional explicit live frontend URL for emails when CLIENT_URL is wrong on the server */
+  PUBLIC_APP_URL: z.string().url().optional(),
 
   REDIS_URL: z.string().default('redis://localhost:6379'),
   REDIS_ENABLED: z

@@ -1,6 +1,7 @@
 const httpStatus = require('http-status-codes');
 const authService = require('../services/auth.service');
 const env = require('../config/env');
+const { getClientBaseUrl } = require('../utils/clientUrl.util');
 
 const REFRESH_COOKIE_NAME = 'refreshToken';
 const GOOGLE_STATE_COOKIE = 'google_oauth_state';
@@ -20,10 +21,11 @@ function setRefreshCookie(res, token) {
 }
 
 function loginRedirect(res, accessToken, errorCode) {
+  const base = getClientBaseUrl();
   if (errorCode) {
-    return res.redirect(`${env.CLIENT_URL}/login?googleError=${encodeURIComponent(errorCode)}`);
+    return res.redirect(`${base}/login?googleError=${encodeURIComponent(errorCode)}`);
   }
-  const url = new URL(`${env.CLIENT_URL}/auth/google/callback`);
+  const url = new URL(`${base}/auth/google/callback`);
   url.searchParams.set('accessToken', accessToken);
   return res.redirect(url.toString());
 }

@@ -4,23 +4,11 @@ const { getIO } = require('../socket/socket');
 const { enqueueEmail } = require('../jobs/queues/email.queue');
 const { sendMail } = require('../emails/mailer.util');
 const { notificationEmail } = require('../emails/templates');
-const env = require('../config/env');
 const logger = require('../config/logger');
-
-/** Same live-safe base as invites — never put localhost links in production emails */
-function clientBaseUrl() {
-  const raw = String(env.CLIENT_URL || 'http://localhost:5173').replace(/\/$/, '');
-  if (
-    env.NODE_ENV === 'production' &&
-    /localhost|127\.0\.0\.1/i.test(raw)
-  ) {
-    return 'https://task-management-system-frontend-z23.vercel.app';
-  }
-  return raw;
-}
+const { getClientBaseUrl } = require('../utils/clientUrl.util');
 
 function buildActionUrl({ entityType, entityId, metadata = {} }) {
-  const base = clientBaseUrl();
+  const base = getClientBaseUrl();
   if (entityType === 'Project' && entityId) {
     return `${base}/projects/${entityId}`;
   }
@@ -55,29 +43,23 @@ async function deliverNotificationEmail({ to, recipientName, message, actionUrl,
   }
 
   if (queued) {
-    logger.debug(`Notification email queued → ${to}`);
+    logger.debug(`Notification email queued → ${to} (${actionUrl})`);
     return;
   }
 
-  // Production parity with local: send immediately when Redis/BullMQ is off
   try {
     await sendMail({
       to,
       subject: payload.subject,
       html: notificationEmail(payload),
     });
-    logger.info(`Notification email sent (direct) → ${to}`);
+    logger.info(`Notification email sent (direct) → ${to} (${actionUrl})`);
   } catch (err) {
     logger.warn(`Notification email send failed → ${to}: ${err.message}`);
   }
 }
 
 class NotificationService {
-  /**
-   * Creates a notification, pushes it over the recipient's socket room,
-   * and (best-effort) sends an email. Never throws on delivery failure —
-   * notification delivery should never break the caller's main action.
-   */
   async notify({
     recipient,
     sender = null,
@@ -102,20 +84,20 @@ class NotificationService {
     try {
       getIO().to(`user:${recipient}`).emit('notification:new', notification);
     } catch {
-      // Socket.IO not initialized (e.g. in a test/worker context) — skip silently
+      // Socket.IO not initialized — skip silently
     }
 
     if (emailToo) {
       try {
         const user = await userRepository.findById(recipient);
         if (user?.email) {
+          const resolvedActionUrl =
+            actionUrl || buildActionUrl({ entityType, entityId, metadata });
           await deliverNotificationEmail({
             to: user.email,
             recipientName: user.name,
             message,
-            actionUrl:
-              actionUrl ||
-              buildActionUrl({ entityType, entityId, metadata }),
+            actionUrl: resolvedActionUrl,
             subject: emailSubject,
           });
         }

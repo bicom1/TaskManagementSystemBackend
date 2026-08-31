@@ -11,6 +11,7 @@ const env = require('../config/env');
 const { sendMail } = require('../emails/mailer.util');
 const { passwordResetEmail } = require('../emails/templates');
 const logger = require('../config/logger');
+const { clientPath } = require('../utils/clientUrl.util');
 
 class AuthService {
   getGoogleRedirectUri() {
@@ -140,7 +141,7 @@ class AuthService {
     user.passwordResetExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
     await user.save({ validateBeforeSave: false });
 
-    const resetUrl = `${env.CLIENT_URL}/reset-password?email=${encodeURIComponent(user.email)}`;
+    const resetUrl = clientPath(`/reset-password?email=${encodeURIComponent(user.email)}`);
 
     try {
       const mailResult = await sendMail({

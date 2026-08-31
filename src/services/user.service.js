@@ -22,6 +22,7 @@ const { sendMail } = require('../emails/mailer.util');
 const { inviteEmail } = require('../emails/templates');
 const env = require('../config/env');
 const logger = require('../config/logger');
+const { getClientBaseUrl } = require('../utils/clientUrl.util');
 const User = require('../models/user.model');
 const Department = require('../models/department.model');
 
@@ -447,10 +448,7 @@ class UserService {
       await Department.findByIdAndUpdate(resolvedDepartment, { head: user._id });
     }
 
-    const clientBase =
-      env.NODE_ENV === 'production' && /localhost|127\.0\.0\.1/i.test(String(env.CLIENT_URL || ''))
-        ? 'https://task-management-system-frontend-z23.vercel.app'
-        : env.CLIENT_URL;
+    const clientBase = getClientBaseUrl();
     const acceptUrl = `${clientBase}/accept-invite?token=${inviteRaw}`;
     const loginUrl = `${clientBase}/login`;
     const emailPayload = {

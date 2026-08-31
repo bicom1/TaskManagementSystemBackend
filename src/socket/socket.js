@@ -35,11 +35,15 @@ function initSocket(httpServer) {
   io.use((socket, next) => {
     try {
       const token = socket.handshake.auth?.token;
-      if (!token) return next(new Error('Authentication required'));
+      if (!token) {
+        logger.debug('Socket auth rejected: missing token');
+        return next(new Error('Authentication required'));
+      }
       const decoded = verifyAccessToken(token);
       socket.userId = decoded.id;
       next();
-    } catch {
+    } catch (err) {
+      logger.debug(`Socket auth rejected: ${err.message || 'invalid token'}`);
       next(new Error('Invalid or expired token'));
     }
   });

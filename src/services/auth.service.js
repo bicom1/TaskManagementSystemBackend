@@ -424,8 +424,28 @@ class AuthService {
     await userRepository.incrementTokenVersion(userId);
   }
 
-  createOAuthState() {
-    return crypto.randomBytes(24).toString('hex');
+  createOAuthState(clientUrl) {
+    const data = {
+      n: crypto.randomBytes(16).toString('hex'),
+      c: clientUrl || null,
+      t: Date.now(),
+    };
+    const payload = JSON.stringify(data);
+    const sig = crypto.createHmac('sha256', env.COOKIE_SECRET).update(payload).digest('base64url');
+    return Buffer.from(JSON.stringify({ p: payload, s: sig })).toString('base64url');
+  }
+
+  verifyOAuthState(state) {
+    try {
+      const { p, s } = JSON.parse(Buffer.from(String(state), 'base64url').toString('utf8'));
+      const expected = crypto.createHmac('sha256', env.COOKIE_SECRET).update(p).digest('base64url');
+      if (s !== expected) return null;
+      const data = JSON.parse(p);
+      if (Date.now() - data.t > 15 * 60 * 1000) return null;
+      return { nonce: data.n, clientUrl: data.c };
+    } catch {
+      return null;
+    }
   }
 
   #issueTokens(user) {

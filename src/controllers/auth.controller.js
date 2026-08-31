@@ -106,9 +106,10 @@ async function googleAuth(req, res) {
 
 /** Redirect browser to Google consent screen */
 async function googleStart(req, res) {
-  const state = authService.createOAuthState();
   const clientUrl = resolveClientUrlFromRequest(req);
+  const state = authService.createOAuthState(clientUrl);
 
+  // Cookie backup only — primary state is signed and returned by Google
   res.cookie(GOOGLE_STATE_COOKIE, state, {
     ...oauthCookieOptions,
     maxAge: 10 * 60 * 1000,
@@ -133,12 +134,13 @@ async function googleCallback(req, res) {
       return loginRedirect(res, null, String(error), savedClientUrl);
     }
 
-    const savedState = req.cookies[GOOGLE_STATE_COOKIE];
-    const savedClientUrl = req.cookies[GOOGLE_CLIENT_URL_COOKIE];
+    const verifiedState = authService.verifyOAuthState(state);
+    const savedClientUrl =
+      verifiedState?.clientUrl || req.cookies[GOOGLE_CLIENT_URL_COOKIE];
     res.clearCookie(GOOGLE_STATE_COOKIE, { path: '/api/v1/auth' });
     res.clearCookie(GOOGLE_CLIENT_URL_COOKIE, { path: '/api/v1/auth' });
 
-    if (!code || !state || !savedState || state !== savedState) {
+    if (!code || !verifiedState) {
       return loginRedirect(res, null, 'invalid_state', savedClientUrl);
     }
 

@@ -111,6 +111,17 @@ class TaskService {
       await this.#notifyAssignees(populated || task, actorId, data.project);
     }
 
+    // Creator always gets an inbox notification (Primary tab) for new tasks
+    await notificationService.notify({
+      recipient: actorId,
+      sender: actorId,
+      type: NOTIFICATION_TYPES.TASK_CREATED,
+      message: `You created "${task.title}"`,
+      entityType: 'Task',
+      entityId: task._id,
+      metadata: { projectId: String(data.project) },
+    });
+
     await notifySuperAdmins({
       actorId,
       type: NOTIFICATION_TYPES.TASK_CREATED,
@@ -429,19 +440,11 @@ class TaskService {
         metadata: { from: existing.status, to: updates.status, automatic: true },
       });
 
-      await Promise.all(
-        (task.assignees || [])
-          .filter((a) => String(a._id || a) !== String(actorId))
-          .map((assigneeId) =>
-            notificationService.notify({
-              recipient: assigneeId._id || assigneeId,
-              sender: actorId,
-              type: NOTIFICATION_TYPES.TASK_STATUS_CHANGED,
-              message: `"${task.title}" moved to ${String(updates.status).replace(/_/g, ' ')}`,
-              entityType: 'Task',
-              entityId: id,
-            })
-          )
+      await this.#notifyTaskStatusChange(
+        task,
+        actorId,
+        existing.project?._id || existing.project,
+        updates.status
       );
     }
 
@@ -610,6 +613,38 @@ class TaskService {
     if (!task) throw ApiError.notFound('Task not found');
     emitTaskEvent('task:deleted', task, existing.project?._id || existing.project);
     return task;
+  }
+
+  async #notifyTaskStatusChange(task, actorId, projectId, newStatus) {
+    const ids = new Set();
+    const reporterId = task.reporter?._id || task.reporter;
+    if (reporterId) ids.add(String(reporterId));
+    (task.assignees || []).forEach((a) => {
+      const id = a?._id || a;
+      if (id) ids.add(String(id));
+    });
+    if (actorId) ids.add(String(actorId));
+
+    const statusLabel = String(newStatus).replace(/_/g, ' ');
+    const projectKey = projectId ? String(projectId) : '';
+
+    await Promise.all(
+      [...ids].map((recipientId) =>
+        notificationService
+          .notify({
+            recipient: recipientId,
+            sender: actorId,
+            type: NOTIFICATION_TYPES.TASK_STATUS_CHANGED,
+            message: `"${task.title}" moved to ${statusLabel}`,
+            entityType: 'Task',
+            entityId: task._id,
+            metadata: { projectId: projectKey },
+            emailToo: recipientId !== String(actorId),
+            emailSubject: `Task updated: ${task.title}`,
+          })
+          .catch(() => {})
+      )
+    );
   }
 
   async #notifyAssignees(task, actorId, projectIdOverride = null) {

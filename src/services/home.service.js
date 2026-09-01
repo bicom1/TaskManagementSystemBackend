@@ -305,6 +305,21 @@ class HomeService {
     const prefs = ensurePrefs(user);
     const uid = user._id;
 
+    if (view === 'inbox') {
+      const since = new Date();
+      since.setDate(since.getDate() - 21);
+      return Task.find({
+        isArchived: false,
+        parentTask: null,
+        $or: [{ reporter: uid }, { assignees: uid }],
+        updatedAt: { $gte: since },
+      })
+        .sort({ updatedAt: -1 })
+        .limit(50)
+        .populate(TASK_POPULATE)
+        .lean();
+    }
+
     if (view === 'all') {
       const policy = require('./policy.service');
       const Project = require('../models/project.model');

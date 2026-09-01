@@ -24,6 +24,7 @@ const {
 } = require('./emails/mailer.util');
 const {
   getClientBaseUrl,
+  getEmailAppUrl,
   isAllowedClientOrigin,
   PRODUCTION_APP_FALLBACK,
 } = require('./utils/clientUrl.util');
@@ -85,8 +86,9 @@ app.get('/health', (req, res) =>
     status: 'ok',
     uptime: process.uptime(),
     // Bump when deploying so you can confirm Render picked up this build
-    version: 'views-meetings-2026-08-31',
+    version: 'email-live-links-2026-08-31',
     clientUrl: getClientBaseUrl(),
+    emailAppUrl: getEmailAppUrl(),
     email: {
       provider: getActiveEmailProvider(),
       lastError: getLastSmtpError() || null,

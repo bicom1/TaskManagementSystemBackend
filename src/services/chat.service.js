@@ -4,7 +4,7 @@ const User = require('../models/user.model');
 const Team = require('../models/team.model');
 const Department = require('../models/department.model');
 const notificationService = require('./notification.service');
-const { clientPath } = require('../utils/clientUrl.util');
+const { emailPath } = require('../utils/clientUrl.util');
 const { NOTIFICATION_TYPES } = require('../constants/notification.constant');
 const { ROLES } = require('../constants/roles.constant');
 const {
@@ -189,7 +189,7 @@ class ChatService {
         ...c,
         participants: uniqueById(c.participants || [], (p) => String(p._id || p)),
         unread,
-        shareUrl: clientPath(`/inbox?chat=${c._id}`),
+        shareUrl: emailPath(`/inbox?chat=${c._id}`),
       };
     });
 
@@ -215,7 +215,7 @@ class ChatService {
     return {
       ...conversation,
       participants: uniqueById(conversation.participants || [], (p) => String(p._id || p)),
-      shareUrl: clientPath(`/inbox?chat=${conversation._id}`),
+      shareUrl: emailPath(`/inbox?chat=${conversation._id}`),
     };
   }
 

@@ -5,32 +5,32 @@ const { enqueueEmail } = require('../jobs/queues/email.queue');
 const { sendMail } = require('../emails/mailer.util');
 const { notificationEmail } = require('../emails/templates');
 const logger = require('../config/logger');
-const { getClientBaseUrl } = require('../utils/clientUrl.util');
+const { getEmailAppUrl, ensureLiveEmailUrl } = require('../utils/clientUrl.util');
 
 function buildActionUrl({ entityType, entityId, metadata = {} }) {
-  const base = getClientBaseUrl();
+  const base = getEmailAppUrl();
+  let path = '';
   if (entityType === 'Project' && entityId) {
-    return `${base}/projects/${entityId}`;
-  }
-  if (entityType === 'Task' && entityId) {
+    path = `/projects/${entityId}`;
+  } else if (entityType === 'Task' && entityId) {
     const projectId = metadata.projectId;
-    if (projectId) {
-      return `${base}/projects/${projectId}?task=${entityId}`;
-    }
-    return `${base}/all-tasks`;
+    path = projectId ? `/projects/${projectId}?task=${entityId}` : '/all-tasks';
+  } else if (entityType === 'Comment' && metadata.projectId) {
+    path = `/projects/${metadata.projectId}`;
+  } else if (entityType === 'Meeting') {
+    path = '/home/meetings';
   }
-  if (entityType === 'Comment' && metadata.projectId) {
-    return `${base}/projects/${metadata.projectId}`;
-  }
-  return base;
+
+  return ensureLiveEmailUrl(`${base}${path}`);
 }
 
 async function deliverNotificationEmail({ to, recipientName, message, actionUrl, subject }) {
+  const liveUrl = ensureLiveEmailUrl(actionUrl);
   const payload = {
     to,
     recipientName,
     message,
-    actionUrl,
+    actionUrl: liveUrl,
     subject: subject || 'You have a new update — BIWORKSPACE',
   };
 
@@ -41,7 +41,7 @@ async function deliverNotificationEmail({ to, recipientName, message, actionUrl,
       subject: payload.subject,
       html: notificationEmail(payload),
     });
-    logger.info(`Notification email sent (direct) → ${to} (${actionUrl})`);
+    logger.info(`Notification email sent (direct) → ${to} (${liveUrl})`);
     return;
   } catch (directErr) {
     logger.warn(`Notification direct email failed → ${to}: ${directErr.message}`);

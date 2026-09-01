@@ -2,6 +2,7 @@ const env = require('../../config/env');
 const logger = require('../../config/logger');
 const { sendMail } = require('../../emails/mailer.util');
 const { notificationEmail, welcomeEmail, inviteEmail } = require('../../emails/templates');
+const { ensureLiveEmailUrl } = require('../../utils/clientUrl.util');
 const {
   getQueueConnection,
   isValidRedisUrl,
@@ -21,6 +22,15 @@ const SUBJECTS = {
   welcome: 'Welcome to BIWORKSPACE',
   invite: 'You are invited to BIWORKSPACE',
 };
+
+function sanitizeEmailData(template, data) {
+  const next = { ...data };
+  if (next.actionUrl) next.actionUrl = ensureLiveEmailUrl(next.actionUrl);
+  if (next.loginUrl) next.loginUrl = ensureLiveEmailUrl(next.loginUrl, '/login');
+  if (next.acceptUrl) next.acceptUrl = ensureLiveEmailUrl(next.acceptUrl, '/accept-invite');
+  if (next.resetUrl) next.resetUrl = ensureLiveEmailUrl(next.resetUrl, '/reset-password');
+  return next;
+}
 
 function startEmailWorker() {
   if (!redisEnabled) {
@@ -43,11 +53,12 @@ function startEmailWorker() {
         const { template, data } = job.data;
         const render = TEMPLATE_RENDERERS[template];
         if (!render) throw new Error(`Unknown email template: ${template}`);
+        const safeData = sanitizeEmailData(template, data);
 
         await sendMail({
-          to: data.to,
-          subject: data.subject || SUBJECTS[template],
-          html: render(data),
+          to: safeData.to,
+          subject: safeData.subject || SUBJECTS[template],
+          html: render(safeData),
         });
       },
       {

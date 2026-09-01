@@ -4,7 +4,7 @@ const { ROLES } = require('../constants/roles.constant');
 
 /**
  * Notify every active Super Admin (email + in-app).
- * Skips the acting user if they are themselves a Super Admin.
+ * Skips the acting user and any IDs in excludeIds (e.g. already notified attendees).
  */
 async function notifySuperAdmins({
   actorId,
@@ -15,16 +15,17 @@ async function notifySuperAdmins({
   emailSubject,
   metadata = {},
   emailToo = true,
+  excludeIds = [],
 }) {
   const result = await userRepository.findPaginated(
     { role: ROLES.SUPER_ADMIN, isActive: true },
     { page: 1, limit: 50 }
   );
 
-  const actorKey = String(actorId || '');
+  const skip = new Set([String(actorId || ''), ...excludeIds.map(String)]);
   await Promise.all(
     (result.data || [])
-      .filter((admin) => String(admin._id) !== actorKey)
+      .filter((admin) => !skip.has(String(admin._id)))
       .map((admin) =>
         notificationService
           .notify({

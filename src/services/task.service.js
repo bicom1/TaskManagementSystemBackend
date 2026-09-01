@@ -140,9 +140,15 @@ class TaskService {
       done: [],
     };
 
-    // ClickUp-style: anyone who can open the Space/Project sees the full board
     for (const task of tasks) {
-      if (columns[task.status]) columns[task.status].push(task);
+      if (!columns[task.status]) continue;
+      const access = policy.getTaskAccess(actor, task, project);
+      const obj = task.toObject ? task.toObject() : { ...task };
+      columns[task.status].push({
+        ...obj,
+        accessMode: access,
+        canManage: access === ACCESS.MANAGE,
+      });
     }
     return columns;
   }
@@ -166,7 +172,10 @@ class TaskService {
     });
     if (!task) throw ApiError.notFound('Task not found');
     policy.assertTaskView(actor, task, task.project);
-    return task;
+
+    const access = policy.getTaskAccess(actor, task, task.project);
+    const obj = task.toObject ? task.toObject() : { ...task };
+    return { ...obj, accessMode: access, canManage: access === ACCESS.MANAGE };
   }
 
   async getSubtasks(parentTaskId, actorInput) {
@@ -590,21 +599,12 @@ class TaskService {
 
   async delete(id, actorInput) {
     const actor = await resolveActor(actorInput);
-    policy.assertPermission(actor, PERMISSIONS.TASK_DELETE);
-
     const existing = await taskRepository.findById(id, {
       populate: [{ path: 'project', populate: { path: 'team', select: 'lead members department' } }],
     });
     if (!existing) throw ApiError.notFound('Task not found');
 
-    const access = policy.getProjectAccess(actor, existing.project);
-    // Super Admin: delete anywhere. Dept heads / leads: only where they MANAGE (own dept/team).
-    // SEO Head may edit Dev/Designing but cannot delete there (VIEW ≠ MANAGE).
-    if (access !== ACCESS.MANAGE && actor.role !== ROLES.SUPER_ADMIN) {
-      throw ApiError.forbidden(
-        'You can only delete tasks in departments/projects you manage. Cross-department work is view/edit only.'
-      );
-    }
+    policy.assertTaskManage(actor, existing, existing.project);
 
     const task = await taskRepository.deleteById(id);
     if (!task) throw ApiError.notFound('Task not found');

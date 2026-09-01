@@ -219,40 +219,27 @@ function getProjectAccess(actor, project) {
 
 /**
  * Task access:
- * - Manage if can manage the project/team, OR assignee editing own work fields
- * - View if can view the project
+ * - Super Admin: full CRUD on any task
+ * - Others: VIEW tasks in visible projects; MANAGE only own tasks (assignee or reporter)
  */
+function isTaskOwner(actor, task) {
+  if (!actor || !task) return false;
+  const actorId = String(actor.id);
+  const isAssignee = (task.assignees || []).some((a) => String(a._id || a) === actorId);
+  const isReporter = String(task.reporter?._id || task.reporter) === actorId;
+  return isAssignee || isReporter;
+}
+
 function getTaskAccess(actor, task, project) {
   if (!actor || !task) return ACCESS.NONE;
   if (actor.role === ROLES.SUPER_ADMIN) return ACCESS.MANAGE;
 
   const projectAccess = project ? getProjectAccess(actor, project) : ACCESS.NONE;
-  if (projectAccess === ACCESS.MANAGE) return ACCESS.MANAGE;
+  if (!canViewResource(projectAccess)) return ACCESS.NONE;
 
-  const isAssignee = (task.assignees || []).some(
-    (a) => String(a._id || a) === actor.id
-  );
-  const isReporter = String(task.reporter?._id || task.reporter) === actor.id;
+  if (isTaskOwner(actor, task)) return ACCESS.MANAGE;
 
-  if (isAssignee || isReporter) {
-    // Employees/executives can edit their assigned work; not delete/reassign freely
-    return ACCESS.MANAGE;
-  }
-
-  // Visible project + edit/assign: may update/reassign (delete still needs project MANAGE)
-  // Covers SEO Head on Designing/Development and general team members editing visible work
-  if (
-    projectAccess === ACCESS.VIEW &&
-    (hasPermission(actor, PERMISSIONS.TASK_EDIT) ||
-      hasPermission(actor, PERMISSIONS.TASK_ASSIGN) ||
-      actor.role === ROLES.DEPT_HEAD)
-  ) {
-    return ACCESS.MANAGE;
-  }
-
-  if (projectAccess === ACCESS.VIEW) return ACCESS.VIEW;
-
-  return ACCESS.NONE;
+  return ACCESS.VIEW;
 }
 
 function canManageResource(access) {
@@ -412,6 +399,7 @@ module.exports = {
   getTeamAccess,
   getProjectAccess,
   getTaskAccess,
+  isTaskOwner,
   canManageResource,
   canViewResource,
   userListFilter,

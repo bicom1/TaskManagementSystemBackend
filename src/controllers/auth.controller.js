@@ -36,6 +36,15 @@ function resolveOAuthClientUrl(storedUrl) {
   return getClientBaseUrl();
 }
 
+function resolveGoogleErrorCode(err) {
+  if (err?.statusCode === 403) {
+    const msg = String(err.message || '');
+    if (msg.includes('expired')) return 'invite_expired';
+    return 'not_invited';
+  }
+  return err?.message || 'google_failed';
+}
+
 function loginRedirect(res, accessToken, errorCode, clientBase, user = null) {
   const base = resolveOAuthClientUrl(clientBase);
   if (errorCode) {
@@ -161,7 +170,7 @@ async function googleCallback(req, res) {
     setRefreshCookie(res, auth.refreshToken);
     return loginRedirect(res, auth.accessToken, null, savedClientUrl, auth.user);
   } catch (err) {
-    const message = err?.message || 'google_failed';
+    const message = resolveGoogleErrorCode(err);
     const savedClientUrl = req.cookies[GOOGLE_CLIENT_URL_COOKIE];
     res.clearCookie(GOOGLE_CLIENT_URL_COOKIE, { path: '/api/v1/auth' });
     return loginRedirect(res, null, message, savedClientUrl);

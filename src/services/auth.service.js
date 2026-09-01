@@ -270,6 +270,80 @@ class AuthService {
     return this.#loginWithGoogleProfile(ticket.getPayload());
   }
 
+  #assertGoogleInviteValid(user) {
+    if (!user?.invitePending) return;
+    if (user.inviteTokenExpires && user.inviteTokenExpires < new Date()) {
+      throw ApiError.forbidden(
+        'Your invitation has expired. Ask your admin to send a new invite.'
+      );
+    }
+  }
+
+  async #linkGoogleAccount(user, { googleId, email, avatarUrl }) {
+    const updates = {
+      googleId,
+      invitePending: false,
+    };
+    if (avatarUrl) updates.avatarUrl = avatarUrl;
+    if (user.password) {
+      updates.authProvider = 'local';
+    } else {
+      updates.authProvider = 'google';
+    }
+    if (user.email !== email) {
+      updates.email = email;
+    }
+    try {
+      return await userRepository.updateById(user._id, updates);
+    } catch (err) {
+      if (err?.code === 11000) {
+        const recovered =
+          (await userRepository.findByGoogleId(googleId)) ||
+          (await userRepository.findByEmailInsensitiveWithInvite(email, { withPassword: true }));
+        if (!recovered) throw err;
+        const recover = { invitePending: false };
+        if (!recovered.googleId) recover.googleId = googleId;
+        if (avatarUrl) recover.avatarUrl = avatarUrl;
+        return userRepository.updateById(recovered._id, recover);
+      }
+      throw err;
+    }
+  }
+
+  async #linkGoogleAndAcceptInvite(user, { googleId, email, name, avatarUrl }) {
+    this.#assertGoogleInviteValid(user);
+
+    const updates = {
+      googleId,
+      invitePending: false,
+      inviteToken: null,
+      inviteTokenExpires: null,
+      authProvider: user.password ? 'local' : 'google',
+    };
+    if (avatarUrl) updates.avatarUrl = avatarUrl;
+    if (name && name !== user.name) updates.name = name;
+    if (user.email !== email) updates.email = email;
+
+    try {
+      return await userRepository.updateById(user._id, updates);
+    } catch (err) {
+      if (err?.code === 11000) {
+        const recovered =
+          (await userRepository.findByGoogleId(googleId)) ||
+          (await userRepository.findByEmailInsensitiveWithInvite(email, { withPassword: true }));
+        if (!recovered) throw err;
+        return userRepository.updateById(recovered._id, {
+          googleId,
+          invitePending: false,
+          inviteToken: null,
+          inviteTokenExpires: null,
+          ...(avatarUrl ? { avatarUrl } : {}),
+        });
+      }
+      throw err;
+    }
+  }
+
   async #loginWithGoogleProfile(payload) {
     if (!payload?.email || !payload?.sub) {
       throw ApiError.unauthorized('Google account is missing required profile data');
@@ -304,67 +378,56 @@ class AuthService {
       }
     }
 
-    // 2) Same email already registered (password / invite) → link, do not create duplicate
+    // 2) Same email already registered → link Google account (invited or existing user)
     if (!user) {
-      user = await userRepository.findByEmailInsensitive(email, { withPassword: true });
+      user = await userRepository.findByEmailInsensitiveWithInvite(email, {
+        withPassword: true,
+      });
       if (user) {
-        const updates = {
-          googleId,
-          invitePending: false,
-        };
-        if (avatarUrl) updates.avatarUrl = avatarUrl;
-        // Keep local provider if they already have a password so email login still works
-        if (user.password) {
-          updates.authProvider = 'local';
+        if (user.invitePending) {
+          user = await this.#linkGoogleAndAcceptInvite(user, {
+            googleId,
+            email,
+            name,
+            avatarUrl,
+          });
         } else {
-          updates.authProvider = 'google';
-        }
-        // Normalize email casing on the existing row
-        if (user.email !== email) {
-          updates.email = email;
-        }
-        try {
-          user = await userRepository.updateById(user._id, updates);
-        } catch (err) {
-          // googleId already on another row — use that account instead of failing
-          if (err?.code === 11000) {
-            user = await userRepository.findByGoogleId(googleId);
-            if (!user) {
-              user = await userRepository.findByEmailInsensitive(email, { withPassword: true });
-            }
-            if (!user) throw err;
-            if (avatarUrl) {
-              user = await userRepository.updateById(user._id, { avatarUrl });
-            }
-          } else {
-            throw err;
-          }
+          user = await this.#linkGoogleAccount(user, { googleId, email, avatarUrl });
         }
       }
     }
 
-    // 3) Brand-new Google user
+    // 3) Brand-new Google user — invitation-only (except first-user bootstrap on empty DB)
     if (!user) {
       try {
         const userCount = await userRepository.countAll();
-        const role = userCount === 0 ? 'super_admin' : undefined;
-
-        user = await userRepository.create({
-          name,
-          email,
-          googleId,
-          authProvider: 'google',
-          avatarUrl,
-          ...(role && { role, jobTitle: 'Super Admin' }),
-        });
+        if (userCount === 0) {
+          user = await userRepository.create({
+            name,
+            email,
+            googleId,
+            authProvider: 'google',
+            avatarUrl,
+            role: 'super_admin',
+            jobTitle: 'Super Admin',
+          });
+        } else {
+          throw ApiError.forbidden('You are not invited to this workspace.');
+        }
       } catch (err) {
+        if (err instanceof ApiError) throw err;
         // Race / duplicate email or googleId → authenticate existing account
         if (err?.code === 11000) {
           user =
             (await userRepository.findByGoogleId(googleId)) ||
-            (await userRepository.findByEmailInsensitive(email, { withPassword: true }));
+            (await userRepository.findByEmailInsensitiveWithInvite(email, {
+              withPassword: true,
+            }));
           if (user) {
-            const recover = { invitePending: false };
+            if (user.invitePending) {
+              this.#assertGoogleInviteValid(user);
+            }
+            const recover = { invitePending: false, inviteToken: null, inviteTokenExpires: null };
             if (!user.googleId) recover.googleId = googleId;
             if (avatarUrl) recover.avatarUrl = avatarUrl;
             user = await userRepository.updateById(user._id, recover);
@@ -386,7 +449,11 @@ class AuthService {
     await userRepository.updateLastLogin(user._id);
 
     if (user.invitePending) {
-      await userRepository.updateById(user._id, { invitePending: false });
+      await userRepository.updateById(user._id, {
+        invitePending: false,
+        inviteToken: null,
+        inviteTokenExpires: null,
+      });
       user.invitePending = false;
     }
 

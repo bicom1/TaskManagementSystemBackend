@@ -25,6 +25,18 @@ class UserRepository {
     return query.exec();
   }
 
+  /** Case-insensitive email lookup including invite fields */
+  async findByEmailInsensitiveWithInvite(email, { withPassword = false } = {}) {
+    const normalized = String(email || '').toLowerCase().trim();
+    if (!normalized) return null;
+    const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const query = User.findOne({
+      email: { $regex: `^${escaped}$`, $options: 'i' },
+    }).select('+inviteToken +inviteTokenExpires');
+    if (withPassword) query.select('+password');
+    return query.exec();
+  }
+
   async findByGoogleId(googleId) {
     return User.findOne({ googleId }).exec();
   }

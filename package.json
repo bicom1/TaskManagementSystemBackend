@@ -12,6 +12,7 @@
     "seed": "node src/scripts/seed.js",
     "seed:super-admin": "node src/scripts/ensure-super-admin.js",
     "seed:key-accounts": "node src/scripts/ensure-key-accounts.js",
+    "dedupe:users": "node src/scripts/dedupe-users.js",
     "sync:team-projects": "node src/scripts/sync-team-project-members.js",
     "prepare": "node -e \"try{require('husky').install()}catch(e){}\""
   },
@@ -41,6 +42,7 @@
     "nanoid": "^3.3.7",
     "node-cron": "^3.0.3",
     "nodemailer": "^6.9.14",
+    "openai": "^7.9.0",
     "sharp": "^0.33.4",
     "socket.io": "^4.7.5",
     "swagger-jsdoc": "^6.2.8",

@@ -47,6 +47,10 @@ const envSchema = z.object({
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
   GOOGLE_REDIRECT_URI: z.string().url().optional(),
+
+  OPENAI_API_KEY: z.string().optional(),
+  OPENAI_MODEL_MAX: z.string().default('gpt-4o'),
+  OPENAI_MODEL_FAST: z.string().default('gpt-4o-mini'),
 });
 
 const parsed = envSchema.safeParse(process.env);

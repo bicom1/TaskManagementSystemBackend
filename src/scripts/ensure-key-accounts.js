@@ -33,7 +33,10 @@ const DEV_LEAD = {
 };
 
 async function upsertLocalUser({ email, password, name, role, jobTitle, department }) {
-  let user = await User.findOne({ email }).select('+password');
+  const normalizedEmail = String(email).toLowerCase().trim();
+  let user = await User.findOne({
+    email: new RegExp(`^${normalizedEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
+  }).select('+password');
   const created = !user;
   if (user) {
     user.name = name;
@@ -49,7 +52,7 @@ async function upsertLocalUser({ email, password, name, role, jobTitle, departme
   } else {
     user = await User.create({
       name,
-      email,
+      email: normalizedEmail,
       password,
       role,
       jobTitle,

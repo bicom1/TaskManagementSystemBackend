@@ -57,20 +57,30 @@ class AuthService {
   }
 
   async register({ name, email, password }) {
-    const existing = await userRepository.existsByEmail(email);
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    const normalizedName = String(name || '').trim();
+
+    const existing = await userRepository.findByEmailInsensitive(normalizedEmail);
     if (existing) {
-      throw ApiError.conflict('An account with this email already exists');
+      throw ApiError.conflict(
+        'An account with this email already exists. Sign in or use your invite link.'
+      );
     }
 
     const userCount = await userRepository.countAll();
-    const role = userCount === 0 ? 'super_admin' : undefined;
+    if (userCount > 0) {
+      throw ApiError.forbidden(
+        'Open registration is disabled. Ask your Super Admin for a workspace invitation.'
+      );
+    }
 
     const user = await userRepository.create({
-      name,
-      email,
+      name: normalizedName,
+      email: normalizedEmail,
       password,
       authProvider: 'local',
-      ...(role && { role, jobTitle: 'Super Admin' }),
+      role: 'super_admin',
+      jobTitle: 'Super Admin',
     });
     const tokens = this.#issueTokens(user);
 

@@ -14,6 +14,7 @@ const homeRoutes = require('./home.routes');
 const meetingRoutes = require('./meeting.routes');
 const auditRoutes = require('./audit.routes');
 const chatRoutes = require('./chat.routes');
+const aiRoutes = require('./ai.routes');
 
 const router = Router();
 
@@ -27,6 +28,7 @@ router.use('/comments', commentRoutes);
 router.use('/notifications', notificationRoutes);
 router.use('/messages', messageRoutes);
 router.use('/chat', chatRoutes);
+router.use('/ai', aiRoutes);
 router.use('/reports', reportRoutes);
 router.use('/home', homeRoutes);
 router.use('/workspace', meetingRoutes);

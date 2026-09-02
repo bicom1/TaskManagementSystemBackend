@@ -23,7 +23,9 @@ async function main() {
   await mongoose.connect(uri);
   console.log('Connected. Ensuring Super Admin…');
 
-  let user = await User.findOne({ email: EMAIL }).select('+password');
+  let user = await User.findOne({
+    email: new RegExp(`^${EMAIL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
+  }).select('+password');
 
   if (user) {
     user.name = NAME;

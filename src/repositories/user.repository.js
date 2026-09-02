@@ -1,13 +1,27 @@
 const User = require('../models/user.model');
 
+function normalizeEmail(email) {
+  return String(email || '').toLowerCase().trim();
+}
+
+function emailRegexFilter(email) {
+  const normalized = normalizeEmail(email);
+  if (!normalized) return null;
+  const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return { $regex: `^${escaped}$`, $options: 'i' };
+}
+
 class UserRepository {
   async create(data) {
-    const user = new User(data);
+    const payload = { ...data };
+    if (payload.email) payload.email = normalizeEmail(payload.email);
+    if (payload.name) payload.name = String(payload.name).trim();
+    const user = new User(payload);
     return user.save();
   }
 
   async findByEmail(email, { withPassword = false } = {}) {
-    const normalized = String(email || '').toLowerCase().trim();
+    const normalized = normalizeEmail(email);
     const query = User.findOne({ email: normalized });
     if (withPassword) query.select('+password');
     return query.exec();
@@ -15,24 +29,18 @@ class UserRepository {
 
   /** Case-insensitive email lookup (covers legacy mixed-case rows) */
   async findByEmailInsensitive(email, { withPassword = false } = {}) {
-    const normalized = String(email || '').toLowerCase().trim();
-    if (!normalized) return null;
-    const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const query = User.findOne({
-      email: { $regex: `^${escaped}$`, $options: 'i' },
-    });
+    const filter = emailRegexFilter(email);
+    if (!filter) return null;
+    const query = User.findOne({ email: filter });
     if (withPassword) query.select('+password');
     return query.exec();
   }
 
   /** Case-insensitive email lookup including invite fields */
   async findByEmailInsensitiveWithInvite(email, { withPassword = false } = {}) {
-    const normalized = String(email || '').toLowerCase().trim();
-    if (!normalized) return null;
-    const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const query = User.findOne({
-      email: { $regex: `^${escaped}$`, $options: 'i' },
-    }).select('+inviteToken +inviteTokenExpires');
+    const filter = emailRegexFilter(email);
+    if (!filter) return null;
+    const query = User.findOne({ email: filter }).select('+inviteToken +inviteTokenExpires');
     if (withPassword) query.select('+password');
     return query.exec();
   }
@@ -48,7 +56,9 @@ class UserRepository {
   }
 
   async existsByEmail(email) {
-    return User.exists({ email });
+    const filter = emailRegexFilter(email);
+    if (!filter) return null;
+    return User.exists({ email: filter });
   }
 
   async countAll() {

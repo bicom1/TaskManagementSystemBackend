@@ -225,21 +225,32 @@ class UserService {
     } = payload;
 
     const normalizedEmail = email.trim().toLowerCase();
-    const existingUser = await User.findOne({
-      email: { $regex: `^${normalizedEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' },
-    }).select('+password +inviteToken +inviteTokenExpires');
+    const existingUser = await userRepository.findByEmailInsensitiveWithInvite(normalizedEmail, {
+      withPassword: true,
+    });
 
-    // Re-send invite when user never finished joining (stuck after failed live email/SMTP)
+    const hasJoined =
+      Boolean(existingUser) &&
+      existingUser.isActive !== false &&
+      existingUser.invitePending !== true &&
+      Boolean(existingUser.lastLoginAt);
+
+    if (existingUser && hasJoined) {
+      throw ApiError.conflict(
+        'This email already belongs to an active workspace member. Edit their role in Teams instead of inviting again.'
+      );
+    }
+
+    // Re-send invite only for pending / inactive / never-finished onboarding
     const canReinvite =
       Boolean(existingUser) &&
       (existingUser.invitePending === true ||
-        !existingUser.lastLoginAt ||
         existingUser.isActive === false ||
-        (actor.role === ROLES.SUPER_ADMIN && existingUser.role !== ROLES.SUPER_ADMIN));
+        !existingUser.lastLoginAt);
 
     if (existingUser && !canReinvite) {
       throw ApiError.conflict(
-        'A user with this email already exists and has already joined. Deactivate them in Teams first, then invite again.'
+        'A user with this email already exists. Deactivate them in Teams first, then invite again.'
       );
     }
     const isReinvite = Boolean(existingUser && canReinvite);
@@ -390,18 +401,20 @@ class UserService {
       } catch (createErr) {
         // Race or duplicate from a prior failed live invite — load and re-send
         if (createErr?.code === 11000) {
-          const dup = await User.findOne({
-            email: {
-              $regex: `^${normalizedEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`,
-              $options: 'i',
-            },
-          }).select('+password +inviteToken +inviteTokenExpires');
+          const dup = await userRepository.findByEmailInsensitiveWithInvite(normalizedEmail, {
+            withPassword: true,
+          });
+          const dupHasJoined =
+            dup &&
+            dup.isActive !== false &&
+            dup.invitePending !== true &&
+            Boolean(dup.lastLoginAt);
           const dupCanReinvite =
             dup &&
+            !dupHasJoined &&
             (dup.invitePending === true ||
-              !dup.lastLoginAt ||
               dup.isActive === false ||
-              (actor.role === ROLES.SUPER_ADMIN && dup.role !== ROLES.SUPER_ADMIN));
+              !dup.lastLoginAt);
           if (dup && dupCanReinvite) {
             dup.name = displayName;
             dup.password = temporaryPassword;

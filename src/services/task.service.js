@@ -406,6 +406,16 @@ class TaskService {
 
     const previousAssigneeIds = (existing.assignees || []).map((a) => String(a._id || a));
 
+    if (Array.isArray(updates.assignees)) {
+      updates.assignees = [
+        ...new Set(
+          updates.assignees
+            .map((a) => String(a?._id || a))
+            .filter((id) => /^[a-f\d]{24}$/i.test(id))
+        ),
+      ];
+    }
+
     if (!updates.status) {
       const autoStatus = resolveAutoStatus(existing, updates, 'update');
       if (autoStatus && autoStatus !== existing.status) {

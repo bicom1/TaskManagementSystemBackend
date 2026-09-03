@@ -3,6 +3,12 @@ const { TASK_STATUS_VALUES, TASK_PRIORITY_VALUES } = require('../constants/task.
 
 const objectId = z.string().length(24);
 
+/** Accept raw ids or `{ _id }` objects from clients */
+const assigneeId = z.preprocess((value) => {
+  if (value && typeof value === 'object') return String(value._id || value.id || '');
+  return value == null ? value : String(value);
+}, objectId);
+
 const checklistItemSchema = z.object({
   _id: objectId.optional(),
   text: z.string().trim().min(1).max(500),
@@ -27,7 +33,7 @@ const createTaskSchema = z.object({
     parentTask: objectId.optional().nullable(),
     status: z.enum(TASK_STATUS_VALUES).optional(),
     priority: z.enum(TASK_PRIORITY_VALUES).optional(),
-    assignees: z.array(objectId).optional(),
+    assignees: z.array(assigneeId).optional(),
     dueDate: z.coerce.date().optional().nullable(),
     labels: z.array(z.string().trim().min(1).max(40)).optional(),
     checklist: z.array(checklistItemSchema).optional(),

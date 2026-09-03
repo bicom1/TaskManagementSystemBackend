@@ -69,13 +69,15 @@ app.use(
   })
 );
 
-// Global rate limit as a baseline; auth routes layer a tighter one on top
+// Global rate limit as a baseline; auth routes layer a tighter one on top.
+// SPA task boards fire many GETs/PATCHes — keep this high enough for normal use.
 app.use(
   rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 500,
+    max: 3000,
     standardHeaders: true,
     legacyHeaders: false,
+    skip: (req) => req.path === '/health' || req.path === '/health/email' || req.path === '/',
   })
 );
 

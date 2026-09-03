@@ -19,6 +19,7 @@ const createProjectSchema = z.object({
     description: z.string().trim().max(2000).optional().or(z.literal('')),
     team: optionalObjectId,
     owner: optionalObjectId,
+    developer: optionalObjectId,
     members: z.array(z.string().length(24)).optional(),
     startDate: z.coerce.date().optional(),
     endDate: z.coerce.date().optional(),

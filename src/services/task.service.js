@@ -1,12 +1,10 @@
 const taskRepository = require('../repositories/task.repository');
 const projectRepository = require('../repositories/project.repository');
-const teamRepository = require('../repositories/team.repository');
 const activityService = require('./activity.service');
 const notificationService = require('./notification.service');
 const policy = require('./policy.service');
 const ApiError = require('../utils/ApiError.util');
 const { NOTIFICATION_TYPES } = require('../constants/notification.constant');
-const { canApproveTasks, isLeadOrAbove, ROLES } = require('../constants/roles.constant');
 const { PERMISSIONS, ACCESS } = require('../constants/permissions.constant');
 const Task = require('../models/task.model');
 const { APPROVAL_STATUS } = Task;
@@ -39,12 +37,7 @@ class TaskService {
       throw ApiError.forbidden('You cannot create tasks in this project');
     }
 
-    const projectAccess = policy.getProjectAccess(actor, project);
-    // SEO Head (and other dept heads): full manage in own dept; in other depts may create/assign/edit but not delete
-    // (delete still requires MANAGE — see delete())
-
     const actorId = actor.id;
-    const actorRole = actor.role;
 
     const sequence = await projectRepository.getNextTaskSequence(data.project);
     const key = `${project.key}-${sequence}`;
@@ -53,8 +46,7 @@ class TaskService {
       ? (await taskRepository.getMaxPositionInColumn(data.project, data.status)) + 1
       : 1;
 
-    const autoApprove = isLeadOrAbove(actorRole) && projectAccess === ACCESS.MANAGE;
-    const approvalStatus = autoApprove ? APPROVAL_STATUS.APPROVED : APPROVAL_STATUS.PENDING;
+    const approvalStatus = APPROVAL_STATUS.APPROVED;
 
     let initialStatus = data.status || 'backlog';
     if (!data.status && data.assignees?.length) {
@@ -80,8 +72,8 @@ class TaskService {
       position,
       reporter: actorId,
       approvalStatus,
-      approvedBy: autoApprove ? actorId : null,
-      approvedAt: autoApprove ? new Date() : null,
+      approvedBy: actorId,
+      approvedAt: new Date(),
     });
 
     const populated = await taskRepository.findById(task._id, {
@@ -99,23 +91,6 @@ class TaskService {
       entityId: task._id,
       metadata: { approvalStatus },
     });
-
-    if (!autoApprove) {
-      const team = await teamRepository.findById(project.team?._id || project.team);
-      if (team?.lead) {
-        await notificationService.notify({
-          recipient: team.lead,
-          sender: actorId,
-          type: NOTIFICATION_TYPES.TASK_PENDING_APPROVAL,
-          message: `Task "${task.title}" needs your approval before work can start`,
-          entityType: 'Task',
-          entityId: task._id,
-          emailToo: true,
-          metadata: { projectId: String(data.project) },
-          emailSubject: `Approval needed: ${task.title}`,
-        });
-      }
-    }
 
     if (data.assignees?.length) {
       await this.#notifyAssignees(populated || task, actorId, data.project);
@@ -213,153 +188,35 @@ class TaskService {
     return taskRepository.findSubtasks(parentTaskId);
   }
 
-  async getPendingApprovals(actorInput) {
-    const actor = await resolveActor(actorInput);
-    if (!policy.hasPermission(actor, PERMISSIONS.TASK_APPROVE)) {
-      throw ApiError.forbidden('You cannot approve tasks');
-    }
-
-    let teamIds = actor.ledTeamIds || [];
-
-    // Dept heads: all teams in managed departments
-    if (actor.role === ROLES.DEPT_HEAD && (actor.headedDepartmentIds || []).length) {
-      const teams = await teamRepository.findPaginated(
-        { department: { $in: actor.headedDepartmentIds }, isActive: true },
-        { page: 1, limit: 200 }
-      );
-      teamIds = (teams.data || []).map((t) => String(t._id));
-    }
-
-    if (actor.role === ROLES.SUPER_ADMIN) {
-      const teams = await teamRepository.findPaginated(
-        { isActive: true },
-        { page: 1, limit: 500 }
-      );
-      teamIds = (teams.data || []).map((t) => String(t._id));
-    }
-
-    if (!teamIds.length) return [];
-
-    const projects = await projectRepository.findPaginated(
-      { team: { $in: teamIds } },
-      { page: 1, limit: 500 }
-    );
-    const projectIds = (projects.data || []).map((p) => p._id);
-    if (!projectIds.length) return [];
-
-    return Task.find({
-      project: { $in: projectIds },
-      approvalStatus: APPROVAL_STATUS.PENDING,
-      isArchived: false,
-    })
-      .populate('reporter', 'name avatarUrl')
-      .populate('project', 'name key')
-      .sort({ createdAt: -1 })
-      .lean();
+  async getPendingApprovals(_actorInput) {
+    // Approvals disabled — all users can create and work on tasks immediately.
+    return [];
   }
 
-  async #assertCanApprove(actor, task) {
-    if (!policy.hasPermission(actor, PERMISSIONS.TASK_APPROVE) && !canApproveTasks(actor.role)) {
-      throw ApiError.forbidden('Only team leads and above can approve tasks');
-    }
-    const project = await loadProjectScoped(task.project?._id || task.project);
-    if (!project) throw ApiError.notFound('Project not found');
-    const access = policy.getProjectAccess(actor, project);
-    if (access !== ACCESS.MANAGE) {
-      throw ApiError.forbidden('You can only approve tasks in teams you manage');
-    }
-    return project;
+  async #assertCanApprove(_actor, _task) {
+    throw ApiError.forbidden('Task approvals are disabled — tasks are active as soon as they are created');
   }
 
   async approve(id, actorInput) {
     const actor = await resolveActor(actorInput);
     const existing = await taskRepository.findById(id);
     if (!existing) throw ApiError.notFound('Task not found');
-    await this.#assertCanApprove(actor, existing);
-
+    // Approvals removed: ensure task is marked approved for legacy records
     if (existing.approvalStatus === APPROVAL_STATUS.APPROVED) {
       return existing;
     }
-
     const task = await taskRepository.updateById(id, {
       approvalStatus: APPROVAL_STATUS.APPROVED,
       approvedBy: actor.id,
       approvedAt: new Date(),
       rejectionReason: null,
-      status:
-        existing.status === TASK_STATUS.IN_REVIEW
-          ? TASK_STATUS.DONE
-          : existing.status === TASK_STATUS.BACKLOG
-            ? TASK_STATUS.TODO
-            : existing.status,
     });
-
-    await activityService.record({
-      actor: actor.id,
-      action: 'approved',
-      entityType: 'Task',
-      entityId: id,
-    });
-
-    await notificationService.notify({
-      recipient: existing.reporter,
-      sender: actor.id,
-      type: NOTIFICATION_TYPES.TASK_APPROVED,
-      message: `Your task "${existing.title}" was approved`,
-      entityType: 'Task',
-      entityId: id,
-      emailToo: true,
-      metadata: { projectId: String(existing.project?._id || existing.project || '') },
-      emailSubject: `Task approved: ${existing.title}`,
-    });
-
-    if (task.assignees?.length) {
-      await this.#notifyAssignees(
-        task,
-        actor.id,
-        existing.project?._id || existing.project
-      );
-    }
-
     emitTaskEvent('task:updated', task, existing.project);
     return task;
   }
 
-  async reject(id, actorInput, reason) {
-    const actor = await resolveActor(actorInput);
-    const existing = await taskRepository.findById(id);
-    if (!existing) throw ApiError.notFound('Task not found');
-    await this.#assertCanApprove(actor, existing);
-
-    const task = await taskRepository.updateById(id, {
-      approvalStatus: APPROVAL_STATUS.REJECTED,
-      approvedBy: actor.id,
-      approvedAt: new Date(),
-      rejectionReason: reason || 'Rejected by team lead',
-    });
-
-    await activityService.record({
-      actor: actor.id,
-      action: 'rejected',
-      entityType: 'Task',
-      entityId: id,
-      metadata: { reason },
-    });
-
-    await notificationService.notify({
-      recipient: existing.reporter,
-      sender: actor.id,
-      type: NOTIFICATION_TYPES.TASK_REJECTED,
-      message: `Your task "${existing.title}" was rejected${reason ? `: ${reason}` : ''}`,
-      entityType: 'Task',
-      entityId: id,
-      emailToo: true,
-      metadata: { projectId: String(existing.project?._id || existing.project || '') },
-      emailSubject: `Task rejected: ${existing.title}`,
-    });
-
-    emitTaskEvent('task:updated', task, existing.project);
-    return task;
+  async reject(_id, _actorInput, _reason) {
+    throw ApiError.forbidden('Task approvals are disabled');
   }
 
   async update(id, updates, actorInput) {
@@ -372,15 +229,6 @@ class TaskService {
 
     const project = existing.project;
     policy.assertTaskManage(actor, existing, project);
-
-    if (
-      existing.approvalStatus === APPROVAL_STATUS.PENDING &&
-      updates.status &&
-      updates.status !== 'backlog' &&
-      !canApproveTasks(actor.role)
-    ) {
-      throw ApiError.forbidden('Task must be approved by a team lead before status changes');
-    }
 
     if (Array.isArray(updates.checklist)) {
       updates.checklist = updates.checklist.map((item) => {
@@ -414,12 +262,6 @@ class TaskService {
     delete updates.advanceWorkflow;
 
     if (wantsAdvance && !updates.status) {
-      if (
-        existing.approvalStatus === APPROVAL_STATUS.PENDING &&
-        !canApproveTasks(actor.role)
-      ) {
-        throw ApiError.forbidden('Task must be approved before advancing workflow');
-      }
       updates.status = nextInFlow(existing.status);
     }
 
@@ -438,23 +280,7 @@ class TaskService {
     if (!updates.status) {
       const autoStatus = resolveAutoStatus(existing, updates, 'update');
       if (autoStatus && autoStatus !== existing.status) {
-        if (
-          existing.approvalStatus === APPROVAL_STATUS.APPROVED ||
-          canApproveTasks(actor.role) ||
-          autoStatus === TASK_STATUS.TODO ||
-          autoStatus === TASK_STATUS.IN_PROGRESS ||
-          autoStatus === TASK_STATUS.IN_REVIEW
-        ) {
-          if (
-            existing.approvalStatus === APPROVAL_STATUS.PENDING &&
-            ![TASK_STATUS.BACKLOG, TASK_STATUS.TODO].includes(autoStatus) &&
-            !canApproveTasks(actor.role)
-          ) {
-            // keep waiting
-          } else {
-            updates.status = autoStatus;
-          }
-        }
+        updates.status = autoStatus;
       }
     }
 
@@ -553,13 +379,6 @@ class TaskService {
     if (!existing) throw ApiError.notFound('Task not found');
     policy.assertTaskManage(actor, existing, existing.project);
 
-    if (
-      existing.approvalStatus === APPROVAL_STATUS.PENDING &&
-      !canApproveTasks(actor.role)
-    ) {
-      throw ApiError.forbidden('Task must be approved before advancing workflow');
-    }
-
     const nextStatus = nextInFlow(existing.status);
     if (nextStatus === existing.status) {
       return this.getById(id, actor);
@@ -580,13 +399,6 @@ class TaskService {
     const nextStatus = resolveAutoStatus(existing, {}, 'comment');
     if (nextStatus === existing.status) return existing;
 
-    if (
-      existing.approvalStatus === APPROVAL_STATUS.PENDING &&
-      ![TASK_STATUS.BACKLOG, TASK_STATUS.TODO].includes(nextStatus)
-    ) {
-      return existing;
-    }
-
     return taskRepository.updateById(taskId, { status: nextStatus });
   }
 
@@ -597,21 +409,6 @@ class TaskService {
     });
     if (!existing) throw ApiError.notFound('Task not found');
     policy.assertTaskManage(actor, existing, existing.project);
-
-    if (
-      existing.approvalStatus !== APPROVAL_STATUS.APPROVED &&
-      status !== 'backlog' &&
-      !canApproveTasks(actor.role)
-    ) {
-      throw ApiError.forbidden('Pending tasks cannot move until a team lead approves them');
-    }
-
-    if (
-      existing.approvalStatus === APPROVAL_STATUS.REJECTED &&
-      !canApproveTasks(actor.role)
-    ) {
-      throw ApiError.forbidden('Rejected tasks cannot be moved');
-    }
 
     const task = await taskRepository.updateById(id, { status, position });
 

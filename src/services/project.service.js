@@ -107,6 +107,7 @@ class ProjectService {
       ...((teamDoc?.members || team.members || []).map((m) => String(m._id || m))),
       ...(data.members || []).map(String),
       String(data.owner || actor.id),
+      ...(data.developer ? [String(data.developer)] : []),
     ].filter(Boolean);
 
     const payload = {
@@ -115,6 +116,7 @@ class ProjectService {
       description: data.description || '',
       team: team._id,
       owner: data.owner || actor.id,
+      developer: data.developer || null,
       members: [...new Set(teamMemberIds)],
       status: 'active',
       startDate: data.startDate,
@@ -136,31 +138,38 @@ class ProjectService {
     };
 
     const project = await projectRepository.create(payload);
+    const populated = await projectRepository.findById(project._id, {
+      populate: [
+        { path: 'owner', select: 'name avatarUrl' },
+        { path: 'developer', select: 'name avatarUrl email jobTitle' },
+        { path: 'team', select: 'name' },
+      ],
+    });
 
-    emitProjectEvent('project:created', project, {
+    emitProjectEvent('project:created', populated || project, {
       teamId: team._id,
       ownerId: payload.owner,
       memberIds: payload.members,
     });
 
     await this.#notifyProjectMembers({
-      project,
+      project: populated || project,
       actorId: actor.id,
       type: NOTIFICATION_TYPES.PROJECT_CREATED,
-      message: `You were added to project "${project.name}"`,
-      emailSubject: `New project: ${project.name}`,
+      message: `You were added to project "${payload.name}"`,
+      emailSubject: `New project: ${payload.name}`,
     });
 
     await notifySuperAdmins({
       actorId: actor.id,
       type: NOTIFICATION_TYPES.PROJECT_CREATED,
-      message: `New project "${project.name}" was created`,
+      message: `New project "${payload.name}" was created`,
       entityType: 'Project',
       entityId: project._id,
-      emailSubject: `New project: ${project.name}`,
+      emailSubject: `New project: ${payload.name}`,
     });
 
-    return project;
+    return populated || project;
   }
 
   async list(actorInput, { page, limit, team, status }) {
@@ -179,6 +188,7 @@ class ProjectService {
       limit,
       populate: [
         { path: 'owner', select: 'name avatarUrl' },
+        { path: 'developer', select: 'name avatarUrl email jobTitle' },
         { path: 'team', select: 'name department', populate: { path: 'department', select: 'name code' } },
       ],
     });
@@ -217,6 +227,7 @@ class ProjectService {
     const project = await projectRepository.findById(id, {
       populate: [
         { path: 'owner', select: 'name avatarUrl email jobTitle' },
+        { path: 'developer', select: 'name avatarUrl email jobTitle' },
         { path: 'members', select: 'name avatarUrl email jobTitle' },
         {
           path: 'team',

@@ -28,6 +28,8 @@ const projectSchema = new mongoose.Schema(
     description: { type: String, trim: true, maxlength: 2000, default: '' },
     team: { type: mongoose.Schema.Types.ObjectId, ref: 'Team', required: true },
     owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    /** Primary developer assigned to this project (shown on All Projects). */
+    developer: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     members: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     status: {
       type: String,
@@ -97,5 +99,6 @@ projectSchema.index({ team: 1, status: 1 });
 projectSchema.index({ members: 1 });
 projectSchema.index({ key: 1 }, { unique: true });
 projectSchema.index({ owner: 1 });
+projectSchema.index({ developer: 1 });
 
 module.exports = mongoose.model('Project', projectSchema);

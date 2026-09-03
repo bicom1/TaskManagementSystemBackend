@@ -75,7 +75,7 @@ const taskSchema = new mongoose.Schema(
     approvalStatus: {
       type: String,
       enum: Object.values(APPROVAL_STATUS),
-      default: APPROVAL_STATUS.PENDING,
+      default: APPROVAL_STATUS.APPROVED,
     },
     approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     approvedAt: { type: Date, default: null },

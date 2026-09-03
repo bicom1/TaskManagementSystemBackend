@@ -13,9 +13,13 @@ const TASK_PRIORITY = Object.freeze({
   URGENT: 'urgent',
 });
 
+/** Max developers that can be assigned to one task at a time. */
+const MAX_TASK_ASSIGNEES = 3;
+
 module.exports = {
   TASK_STATUS,
   TASK_STATUS_VALUES: Object.values(TASK_STATUS),
   TASK_PRIORITY,
   TASK_PRIORITY_VALUES: Object.values(TASK_PRIORITY),
+  MAX_TASK_ASSIGNEES,
 };

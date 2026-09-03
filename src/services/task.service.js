@@ -11,7 +11,7 @@ const { PERMISSIONS, ACCESS } = require('../constants/permissions.constant');
 const Task = require('../models/task.model');
 const { APPROVAL_STATUS } = Task;
 const { resolveAutoStatus, nextInFlow } = require('./taskProgression.util');
-const { TASK_STATUS } = require('../constants/task.constant');
+const { TASK_STATUS, MAX_TASK_ASSIGNEES } = require('../constants/task.constant');
 const { emitTaskEvent } = require('../socket/socket');
 const { notifySuperAdmins } = require('./notifySuperAdmins.util');
 
@@ -63,6 +63,15 @@ class TaskService {
 
     // Any authenticated user who can create in this project may assign teammates.
     // Super Admin is always notified (see notifySuperAdmins below).
+    if (Array.isArray(data.assignees)) {
+      data.assignees = [
+        ...new Set(
+          data.assignees
+            .map((a) => String(a?._id || a))
+            .filter((id) => /^[a-f\d]{24}$/i.test(id))
+        ),
+      ].slice(0, MAX_TASK_ASSIGNEES);
+    }
 
     const task = await taskRepository.create({
       ...data,
@@ -423,7 +432,7 @@ class TaskService {
             .map((a) => String(a?._id || a))
             .filter((id) => /^[a-f\d]{24}$/i.test(id))
         ),
-      ];
+      ].slice(0, MAX_TASK_ASSIGNEES);
     }
 
     if (!updates.status) {

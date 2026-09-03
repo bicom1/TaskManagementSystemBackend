@@ -205,7 +205,7 @@ class ProjectService {
     result.data = (result.data || []).map((p) => {
       const obj = p.toObject ? p.toObject() : { ...p };
       obj.openTaskCount = countMap.get(String(obj._id)) || 0;
-      obj.canManage = actor.role === ROLES.SUPER_ADMIN;
+      obj.canManage = policy.canManageResource(policy.getProjectAccess(actor, obj));
       return obj;
     });
 
@@ -234,14 +234,15 @@ class ProjectService {
 
     const access = policy.getProjectAccess(actor, project);
     const obj = project.toObject ? project.toObject() : project;
-    return { ...obj, accessMode: access, canManage: actor.role === ROLES.SUPER_ADMIN };
+    return {
+      ...obj,
+      accessMode: access,
+      canManage: policy.canManageResource(access),
+    };
   }
 
   async update(id, updates, actorInput) {
     const actor = await resolveActor(actorInput);
-    if (actor.role !== ROLES.SUPER_ADMIN) {
-      throw ApiError.forbidden('Only Super Admin can edit projects');
-    }
     policy.assertPermission(actor, PERMISSIONS.PROJECT_EDIT);
 
     const existing = await projectRepository.findById(id, {
@@ -323,9 +324,6 @@ class ProjectService {
 
   async delete(id, actorInput) {
     const actor = await resolveActor(actorInput);
-    if (actor.role !== ROLES.SUPER_ADMIN) {
-      throw ApiError.forbidden('Only Super Admin can delete projects');
-    }
     policy.assertPermission(actor, PERMISSIONS.PROJECT_EDIT);
 
     const existing = await projectRepository.findById(id, {

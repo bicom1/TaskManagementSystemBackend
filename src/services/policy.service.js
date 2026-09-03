@@ -187,6 +187,9 @@ function getProjectAccess(actor, project) {
   if ((actor.ledTeamIds || []).includes(teamId)) return ACCESS.MANAGE;
   if (deptId && (actor.headedDepartmentIds || []).includes(deptId)) return ACCESS.MANAGE;
 
+  // Project owners can rename, edit, and delete their projects
+  if (String(project.owner?._id || project.owner) === actor.id) return ACCESS.MANAGE;
+
   // Cross-dept view for SEO Head
   if (actor.role === ROLES.DEPT_HEAD) return ACCESS.VIEW;
 

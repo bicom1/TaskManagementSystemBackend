@@ -1,5 +1,9 @@
 const { z } = require('zod');
-const { TASK_STATUS_VALUES, TASK_PRIORITY_VALUES } = require('../constants/task.constant');
+const {
+  TASK_STATUS_VALUES,
+  TASK_PRIORITY_VALUES,
+  MAX_TASK_ASSIGNEES,
+} = require('../constants/task.constant');
 
 const objectId = z.string().length(24);
 
@@ -33,7 +37,10 @@ const createTaskSchema = z.object({
     parentTask: objectId.optional().nullable(),
     status: z.enum(TASK_STATUS_VALUES).optional(),
     priority: z.enum(TASK_PRIORITY_VALUES).optional(),
-    assignees: z.array(assigneeId).optional(),
+    assignees: z
+      .array(assigneeId)
+      .max(MAX_TASK_ASSIGNEES, `A task can have at most ${MAX_TASK_ASSIGNEES} assignees`)
+      .optional(),
     dueDate: z.coerce.date().optional().nullable(),
     labels: z.array(z.string().trim().min(1).max(40)).optional(),
     checklist: z.array(checklistItemSchema).optional(),

@@ -220,7 +220,8 @@ function getProjectAccess(actor, project) {
 /**
  * Task access:
  * - Super Admin: full CRUD on any task
- * - Others: VIEW tasks in visible projects; MANAGE only own tasks (assignee or reporter)
+ * - Anyone who can view the project: MANAGE (reassign, status, edit, comments)
+ *   so employees/executives are not limited to only their own tasks
  */
 function isTaskOwner(actor, task) {
   if (!actor || !task) return false;
@@ -237,9 +238,8 @@ function getTaskAccess(actor, task, project) {
   const projectAccess = project ? getProjectAccess(actor, project) : ACCESS.NONE;
   if (!canViewResource(projectAccess)) return ACCESS.NONE;
 
-  if (isTaskOwner(actor, task)) return ACCESS.MANAGE;
-
-  return ACCESS.VIEW;
+  // Project viewers (employees included) can edit status, assignees, and details.
+  return ACCESS.MANAGE;
 }
 
 function canManageResource(access) {

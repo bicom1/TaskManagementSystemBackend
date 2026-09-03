@@ -25,6 +25,7 @@ const logger = require('../config/logger');
 const { getEmailAppUrl } = require('../utils/clientUrl.util');
 const User = require('../models/user.model');
 const Department = require('../models/department.model');
+const Project = require('../models/project.model');
 
 function generateTempPassword() {
   const suffix = crypto.randomBytes(3).toString('hex');
@@ -460,6 +461,11 @@ class UserService {
     if (role === ROLES.DEPT_HEAD && resolvedDepartment) {
       await Department.findByIdAndUpdate(resolvedDepartment, { head: user._id });
     }
+
+    await Project.updateMany(
+      { isPrivate: { $ne: true } },
+      { $addToSet: { members: user._id } }
+    );
 
     const clientBase = getEmailAppUrl();
     const acceptUrl = `${clientBase}/accept-invite?token=${inviteRaw}`;

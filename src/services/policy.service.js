@@ -102,12 +102,7 @@ function assertPermission(actor, permission) {
   }
 }
 
-/**
- * Department access:
- * - Super Admin → manage all
- * - Dept Head → manage own dept(s); VIEW all other departments (cross-dept read)
- * - Team Lead / members → view own department(s) from teams
- */
+
 function getDepartmentAccess(actor, departmentId) {
   if (!actor) return ACCESS.NONE;
   if (actor.role === ROLES.SUPER_ADMIN) return ACCESS.MANAGE;
@@ -120,7 +115,6 @@ function getDepartmentAccess(actor, departmentId) {
 
   if (manages) return ACCESS.MANAGE;
 
-  // Dept heads can view every department (SEO Head → Dev/Designing read-only)
   if (actor.role === ROLES.DEPT_HEAD) return ACCESS.VIEW;
 
   if ((actor.teamDepartmentIds || []).includes(deptId) || actor.departmentId === deptId) {
@@ -214,7 +208,8 @@ function getProjectAccess(actor, project) {
     return ACCESS.VIEW;
   }
 
-  return ACCESS.NONE;
+  // Workspace members can open every registered (non-private) project
+  return ACCESS.VIEW;
 }
 
 /**
@@ -268,22 +263,18 @@ async function projectListFilter(actor) {
   if (actor.role === ROLES.SUPER_ADMIN) return {};
 
   if (actor.role === ROLES.DEPT_HEAD) {
-    // View all projects (manage filtered at write time)
     return {};
   }
 
-  if ((actor.teamIds || []).length || (actor.projectIds || []).length) {
-    return {
-      $or: [
-        ...(actor.teamIds?.length ? [{ team: { $in: actor.teamIds } }] : []),
-        ...(actor.projectIds?.length ? [{ _id: { $in: actor.projectIds } }] : []),
-        { members: actor.id },
-        { owner: actor.id },
-      ],
-    };
-  }
-
-  return { members: actor.id };
+  // Everyone in the workspace sees all registered projects; private ones stay members-only
+  return {
+    $or: [
+      { isPrivate: { $ne: true } },
+      { members: actor.id },
+      { owner: actor.id },
+      ...((actor.teamIds || []).length ? [{ team: { $in: actor.teamIds } }] : []),
+    ],
+  };
 }
 
 /**

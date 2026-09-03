@@ -79,6 +79,7 @@ class TaskService {
       populate: [
         { path: 'assignees', select: 'name avatarUrl email jobTitle role' },
         { path: 'reporter', select: 'name avatarUrl' },
+        { path: 'parentTask', select: 'title key status' },
       ],
     });
 
@@ -151,14 +152,22 @@ class TaskService {
       done: [],
     };
 
+    const subtaskCounts = {};
+    for (const task of tasks) {
+      const parentId = task.parentTask ? String(task.parentTask._id || task.parentTask) : null;
+      if (parentId) subtaskCounts[parentId] = (subtaskCounts[parentId] || 0) + 1;
+    }
+
     for (const task of tasks) {
       if (!columns[task.status]) continue;
       const access = policy.getTaskAccess(actor, task, project);
       const obj = task.toObject ? task.toObject() : { ...task };
+      const id = String(obj._id);
       columns[task.status].push({
         ...obj,
         accessMode: access,
         canManage: access === ACCESS.MANAGE,
+        subtaskCount: subtaskCounts[id] || 0,
       });
     }
     return columns;
@@ -170,6 +179,7 @@ class TaskService {
       populate: [
         { path: 'assignees', select: 'name avatarUrl email jobTitle role' },
         { path: 'reporter', select: 'name avatarUrl jobTitle role' },
+        { path: 'parentTask', select: 'title key status' },
         { path: 'approvedBy', select: 'name avatarUrl' },
         { path: 'blockedBy', select: 'key title status' },
         { path: 'relatedTasks', select: 'key title status' },

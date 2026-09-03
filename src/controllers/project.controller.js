@@ -11,10 +11,10 @@ async function create(req, res) {
 }
 
 async function list(req, res) {
-  const { page = 1, limit = 20, team, status } = req.query;
+  const { page = 1, limit = 200, team, status } = req.query;
   const result = await projectService.list(actorFrom(req), {
     page: Number(page),
-    limit: Number(limit),
+    limit: Math.min(Number(limit) || 200, 500),
     team,
     status,
   });

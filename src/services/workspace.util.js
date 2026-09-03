@@ -29,21 +29,18 @@ async function getUserWorkspace(userId) {
     ),
   ];
 
-  const projects = teamIds.length
-    ? await Project.find({
-        $or: [{ team: { $in: teamIds } }, { members: userId }, { owner: userId }],
-      })
-        .sort({ updatedAt: -1 })
-        .limit(30)
-        .select('name key status team updatedAt')
-        .populate('team', 'name')
-        .lean()
-    : await Project.find({ $or: [{ members: userId }, { owner: userId }] })
-        .sort({ updatedAt: -1 })
-        .limit(30)
-        .select('name key status team updatedAt')
-        .populate('team', 'name')
-        .lean();
+  const projects = await Project.find({
+    $or: [
+      { isPrivate: { $ne: true } },
+      { members: userId },
+      { owner: userId },
+      ...(teamIds.length ? [{ team: { $in: teamIds } }] : []),
+    ],
+  })
+    .sort({ updatedAt: -1 })
+    .select('name key status team updatedAt')
+    .populate('team', 'name')
+    .lean();
 
   return { teams, teamIds, departmentIds, projects };
 }

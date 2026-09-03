@@ -169,8 +169,11 @@ class TeamService {
       await userRepository.updateById(userId, { department: team.department });
     }
 
-    // ClickUp-style: joining a team unlocks that team's projects
-    await Project.updateMany({ team: teamId }, { $addToSet: { members: userId } });
+    // Joining the workspace unlocks every registered (non-private) project
+    await Project.updateMany(
+      { isPrivate: { $ne: true } },
+      { $addToSet: { members: userId } }
+    );
 
     // Keep team chat participants in sync
     try {
@@ -208,10 +211,10 @@ class TeamService {
     const projectNames = teamProjects
       .map((p) => p.name)
       .filter(Boolean)
-      .slice(0, 5);
+      .slice(0, 8);
     const projectHint = projectNames.length
-      ? ` Projects now visible: ${projectNames.join(', ')}${teamProjects.length > 5 ? '…' : ''}.`
-      : '';
+      ? ` All workspace projects are now visible, including ${projectNames.join(', ')}${teamProjects.length > 8 ? '…' : ''}.`
+      : ' All registered workspace projects are now visible.';
 
     if (actorId && String(actorId) !== String(userId)) {
       await notificationService

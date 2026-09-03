@@ -8,7 +8,7 @@ class TaskRepository extends BaseRepository {
 
   async findByProjectGroupedByStatus(projectId) {
     return this.model
-      .find({ project: projectId, parentTask: null, isArchived: false })
+      .find({ project: projectId, isArchived: false })
       .sort('position')
       .populate('assignees', 'name avatarUrl email')
       .populate('reporter', 'name avatarUrl')

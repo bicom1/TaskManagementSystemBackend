@@ -26,6 +26,7 @@ const { getEmailAppUrl } = require('../utils/clientUrl.util');
 const User = require('../models/user.model');
 const Department = require('../models/department.model');
 const Project = require('../models/project.model');
+const { emitUserEvent, forceDisconnectUser } = require('../socket/socket');
 
 function generateTempPassword() {
   const suffix = crypto.randomBytes(3).toString('hex');
@@ -251,7 +252,7 @@ class UserService {
 
     if (existingUser && !canReinvite) {
       throw ApiError.conflict(
-        'A user with this email already exists. Deactivate them in Teams first, then invite again.'
+        'This email is already registered. Please log in using your existing account.'
       );
     }
     const isReinvite = Boolean(existingUser && canReinvite);
@@ -566,6 +567,11 @@ class UserService {
       .catch(() => {});
 
     const fresh = await userRepository.findById(user._id);
+    try {
+      emitUserEvent('user:created', fresh.toSafeObject());
+    } catch {
+      /* socket may not be ready in tests */
+    }
 
     return {
       user: fresh.toSafeObject(),
@@ -697,7 +703,18 @@ class UserService {
       })
       .catch(() => {});
 
-    return updated.toSafeObject();
+    const safe = updated.toSafeObject();
+    emitUserEvent('user:updated', safe);
+
+    if (updates.isActive === false) {
+      forceDisconnectUser(id, {
+        reason: 'deactivated',
+        name: target.name,
+        message: 'Your account has been deactivated. Please contact your administrator.',
+      });
+    }
+
+    return safe;
   }
 
   async deactivate(actor, id) {
@@ -728,6 +745,7 @@ class UserService {
     }
 
     // Soft delete
+    const displayName = target.name;
     const updated = await userRepository.updateById(id, {
       isActive: false,
       deactivatedAt: new Date(),
@@ -741,11 +759,23 @@ class UserService {
         action: 'user_deleted',
         entityType: 'Project',
         entityId: id,
-        metadata: { email: target.email },
+        metadata: { email: target.email, name: displayName },
       })
       .catch(() => {});
 
-    return updated.toSafeObject();
+    const safe = {
+      ...updated.toSafeObject(),
+      name: displayName,
+      deletedName: displayName,
+    };
+    emitUserEvent('user:deleted', safe);
+    forceDisconnectUser(id, {
+      reason: 'deleted',
+      name: displayName,
+      message: `Your account has been deleted. Please contact your administrator.`,
+    });
+
+    return safe;
   }
 }
 

@@ -63,7 +63,7 @@ class AuthService {
     const existing = await userRepository.findByEmailInsensitive(normalizedEmail);
     if (existing) {
       throw ApiError.conflict(
-        'An account with this email already exists. Sign in or use your invite link.'
+        'This email is already registered. Please log in using your existing account.'
       );
     }
 

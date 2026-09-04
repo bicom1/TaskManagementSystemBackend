@@ -4,6 +4,7 @@ const User = require('../models/user.model');
 const Team = require('../models/team.model');
 const Department = require('../models/department.model');
 const notificationService = require('./notification.service');
+const ApiError = require('../utils/ApiError.util');
 const { emailPath } = require('../utils/clientUrl.util');
 const { NOTIFICATION_TYPES } = require('../constants/notification.constant');
 const { ROLES } = require('../constants/roles.constant');
@@ -86,16 +87,10 @@ class ChatService {
    * Directory for chat UI. Teams list is membership-scoped (plus SA sees all).
    */
   async listDirectory(actorId) {
-    const actor = await User.findById(actorId).select('role').lean();
+    const actor = await User.findById(actorId).select('role department').lean();
     const isSuperAdmin = actor?.role === ROLES.SUPER_ADMIN;
 
-    const [people, allTeams, departments] = await Promise.all([
-      User.find({ isActive: true })
-        .select('name email avatarUrl jobTitle role department lastLoginAt')
-        .populate('department', 'name code')
-        .sort({ name: 1 })
-        .limit(200)
-        .lean(),
+    const [allTeams, departments, conversations] = await Promise.all([
       Team.find({ isActive: true })
         .select('name department lead members')
         .populate('department', 'name code')
@@ -105,6 +100,9 @@ class ChatService {
         .select('name code head')
         .sort({ name: 1 })
         .lean(),
+      Conversation.find({ isActive: true, participants: actorId })
+        .select('participants')
+        .lean(),
     ]);
 
     const myTeams = uniqueById(
@@ -113,11 +111,49 @@ class ChatService {
     );
     const teams = uniqueById(isSuperAdmin ? allTeams : myTeams, (t) => String(t._id));
 
+    let peopleFilter = { isActive: true };
+    if (!isSuperAdmin) {
+      const relatedIds = new Set([String(actorId)]);
+      for (const c of conversations || []) {
+        for (const p of c.participants || []) relatedIds.add(String(p));
+      }
+      for (const t of myTeams) {
+        if (t.lead) relatedIds.add(String(t.lead._id || t.lead));
+        for (const m of t.members || []) relatedIds.add(String(m._id || m));
+      }
+      if (actor?.department) {
+        const deptPeers = await User.find({
+          isActive: true,
+          department: actor.department,
+        })
+          .select('_id')
+          .lean();
+        for (const p of deptPeers) relatedIds.add(String(p._id));
+      }
+      peopleFilter = { isActive: true, _id: { $in: [...relatedIds] } };
+    }
+
+    const people = await User.find(peopleFilter)
+      .select('name email avatarUrl jobTitle role department lastLoginAt lastSeenAt')
+      .populate('department', 'name code')
+      .sort({ name: 1 })
+      .limit(isSuperAdmin ? 500 : 200)
+      .lean();
+
     return {
       people: uniqueById(people, (p) => String(p._id)),
       teams,
       myTeams,
-      departments: uniqueById(departments, (d) => String(d._id)),
+      departments: uniqueById(
+        isSuperAdmin
+          ? departments
+          : departments.filter(
+              (d) =>
+                String(d.head) === String(actorId) ||
+                String(d._id) === String(actor?.department)
+            ),
+        (d) => String(d._id)
+      ),
       limits: {
         maxFiles: MAX_FILES_PER_MESSAGE,
         maxLinks: MAX_LINKS_PER_MESSAGE,
@@ -128,6 +164,9 @@ class ChatService {
   }
 
   async searchPeople(actorId, { q = '', department, role, limit = 30 } = {}) {
+    const actor = await User.findById(actorId).select('role department').lean();
+    const isSuperAdmin = actor?.role === ROLES.SUPER_ADMIN;
+
     const filter = {
       isActive: true,
       _id: { $ne: actorId },
@@ -135,6 +174,14 @@ class ChatService {
 
     if (department) filter.department = department;
     if (role) filter.role = role;
+
+    if (!isSuperAdmin) {
+      const directory = await this.listDirectory(actorId);
+      const allowedIds = (directory.people || [])
+        .map((p) => String(p._id))
+        .filter((id) => id !== String(actorId));
+      filter._id = { $in: allowedIds };
+    }
 
     if (q && q.trim()) {
       const term = q.trim();
@@ -154,7 +201,7 @@ class ChatService {
     }
 
     const people = await User.find(filter)
-      .select('name email avatarUrl jobTitle role department lastLoginAt')
+      .select('name email avatarUrl jobTitle role department lastLoginAt lastSeenAt')
       .populate('department', 'name code')
       .sort({ name: 1 })
       .limit(Math.min(limit, 50))
@@ -163,9 +210,28 @@ class ChatService {
     return people;
   }
 
+  async #isSuperAdmin(userId) {
+    const actor = await User.findById(userId).select('role').lean();
+    return actor?.role === ROLES.SUPER_ADMIN;
+  }
+
+  /** Participant or Super Admin may read a conversation. */
+  async assertCanAccessConversation(conversation, userId) {
+    if (!conversation) throw ApiError.notFound('Conversation not found');
+    const isParticipant = (conversation.participants || []).some(
+      (p) => String(p._id || p) === String(userId)
+    );
+    if (isParticipant) return true;
+    if (await this.#isSuperAdmin(userId)) return true;
+    throw ApiError.forbidden('You are not in this conversation');
+  }
+
   async listConversations(userId, { page = 1, limit = 40 } = {}) {
     const skip = (page - 1) * limit;
-    const filter = { isActive: true, participants: userId };
+    const isSuperAdmin = await this.#isSuperAdmin(userId);
+    const filter = isSuperAdmin
+      ? { isActive: true }
+      : { isActive: true, participants: userId };
 
     const [rows, total] = await Promise.all([
       populateConversation(
@@ -207,10 +273,7 @@ class ChatService {
     if (!conversation || !conversation.isActive) {
       throw ApiError.notFound('Conversation not found');
     }
-    const isParticipant = (conversation.participants || []).some(
-      (p) => String(p._id || p) === String(userId)
-    );
-    if (!isParticipant) throw ApiError.forbidden('You are not in this conversation');
+    await this.assertCanAccessConversation(conversation, userId);
 
     return {
       ...conversation,
@@ -226,6 +289,15 @@ class ChatService {
 
     const other = await User.findById(otherUserId).select('_id name isActive').lean();
     if (!other || !other.isActive) throw ApiError.notFound('User not found');
+
+    // Non–Super Admins may only DM people visible in their directory
+    if (!(await this.#isSuperAdmin(actorId))) {
+      const directory = await this.listDirectory(actorId);
+      const allowed = (directory.people || []).some((p) => String(p._id) === String(otherUserId));
+      if (!allowed) {
+        throw ApiError.forbidden('You can only chat with people in your workspace network');
+      }
+    }
 
     const dmKey = dmKeyFor(actorId, otherUserId);
     let conversation = await Conversation.findOne({ dmKey, type: 'dm' });
@@ -706,11 +778,7 @@ class ChatService {
   async markConversationRead(conversationId, userId) {
     const conversation = await Conversation.findById(conversationId);
     if (!conversation) throw ApiError.notFound('Conversation not found');
-
-    const isParticipant = conversation.participants.some(
-      (p) => String(p) === String(userId)
-    );
-    if (!isParticipant) throw ApiError.forbidden('You are not in this conversation');
+    await this.assertCanAccessConversation(conversation, userId);
 
     const idx = (conversation.readState || []).findIndex(
       (r) => String(r.user) === String(userId)

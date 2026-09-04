@@ -13,9 +13,9 @@ function errorHandler(err, req, res, next) {
     const field = fields[0] || 'field';
     const message =
       field === 'email'
-        ? 'An account with this email already exists'
+        ? 'This email is already registered. Please log in using your existing account.'
         : field === 'googleId'
-          ? 'This Google account is already linked'
+          ? 'This Google account is already linked to an existing account. Please log in.'
           : 'Duplicate value';
     error = ApiError.conflict(message);
   } else if (!(error instanceof ApiError)) {

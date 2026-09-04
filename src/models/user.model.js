@@ -71,6 +71,10 @@ const userSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    lastSeenAt: {
+      type: Date,
+      default: null,
+    },
     invitePending: {
       type: Boolean,
       default: false,

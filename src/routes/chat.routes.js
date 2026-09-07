@@ -3,6 +3,7 @@ const authenticate = require('../middlewares/auth.middleware');
 const validate = require('../middlewares/validate.middleware');
 const upload = require('../middlewares/upload.middleware');
 const controller = require('../controllers/chat.controller');
+const { validateObjectIdParam } = require('../middlewares/validateObjectId.middleware');
 const {
   startDmSchema,
   startTeamSchema,
@@ -19,8 +20,12 @@ router.use(authenticate);
 router.get('/directory', controller.directory);
 router.get('/people', controller.searchPeople);
 router.get('/conversations', controller.listConversations);
-router.get('/conversations/:id', controller.getConversation);
-router.get('/conversations/:id/messages', controller.listMessages);
+router.get('/conversations/:id', validateObjectIdParam('id'), controller.getConversation);
+router.get(
+  '/conversations/:id/messages',
+  validateObjectIdParam('id'),
+  controller.listMessages
+);
 
 router.post('/dm', validate(startDmSchema), controller.startDm);
 router.post('/team', validate(startTeamSchema), controller.startTeamChat);
@@ -30,11 +35,12 @@ router.post('/project', validate(startProjectSchema), controller.startProjectCha
 
 router.post(
   '/conversations/:id/messages',
+  validateObjectIdParam('id'),
   upload.array('files', MAX_FILES_PER_MESSAGE),
   controller.normalizeChatMessageBody,
   validate(sendChatMessageSchema),
   controller.sendMessage
 );
-router.patch('/conversations/:id/read', controller.markRead);
+router.patch('/conversations/:id/read', validateObjectIdParam('id'), controller.markRead);
 
 module.exports = router;

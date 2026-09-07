@@ -29,6 +29,16 @@ function setRefreshCookie(res, token) {
   res.cookie(REFRESH_COOKIE_NAME, token, refreshCookieOptions);
 }
 
+function clearRefreshCookie(res) {
+  // Must mirror set options or browsers keep the cookie (esp. SameSite=None in prod)
+  res.clearCookie(REFRESH_COOKIE_NAME, {
+    path: '/api/v1/auth',
+    httpOnly: true,
+    secure: isProd,
+    sameSite: isProd ? 'none' : 'lax',
+  });
+}
+
 function resolveOAuthClientUrl(storedUrl) {
   if (storedUrl && isAllowedClientOrigin(storedUrl)) {
     return normalizeUrl(storedUrl);
@@ -74,7 +84,7 @@ async function register(req, res) {
   res.status(httpStatus.StatusCodes.CREATED).json({
     success: true,
     message: 'Account created successfully',
-    data: { user, accessToken },
+    data: { user, accessToken, refreshToken },
   });
 }
 
@@ -84,23 +94,27 @@ async function login(req, res) {
   res.status(httpStatus.StatusCodes.OK).json({
     success: true,
     message: 'Logged in successfully',
-    data: { user, accessToken },
+    data: { user, accessToken, refreshToken },
   });
 }
 
 async function refresh(req, res) {
-  const incomingToken = req.cookies[REFRESH_COOKIE_NAME];
+  // Cookie (browser) or body (Postman / mobile clients)
+  const incomingToken =
+    req.cookies?.[REFRESH_COOKIE_NAME] ||
+    req.body?.refreshToken ||
+    null;
   const { user, accessToken, refreshToken } = await authService.refresh(incomingToken);
   setRefreshCookie(res, refreshToken);
   res.status(httpStatus.StatusCodes.OK).json({
     success: true,
     message: 'Token refreshed',
-    data: { user, accessToken },
+    data: { user, accessToken, refreshToken },
   });
 }
 
 async function logout(req, res) {
-  res.clearCookie(REFRESH_COOKIE_NAME, { path: '/api/v1/auth' });
+  clearRefreshCookie(res);
   res.status(httpStatus.StatusCodes.OK).json({
     success: true,
     message: 'Logged out successfully',
@@ -109,7 +123,7 @@ async function logout(req, res) {
 
 async function logoutAllDevices(req, res) {
   await authService.logoutAllDevices(req.user.id);
-  res.clearCookie(REFRESH_COOKIE_NAME, { path: '/api/v1/auth' });
+  clearRefreshCookie(res);
   res.status(httpStatus.StatusCodes.OK).json({
     success: true,
     message: 'Logged out from all devices',
@@ -122,7 +136,40 @@ async function googleAuth(req, res) {
   res.status(httpStatus.StatusCodes.OK).json({
     success: true,
     message: 'Signed in with Google',
-    data: { user, accessToken },
+    data: { user, accessToken, refreshToken },
+  });
+}
+
+/**
+ * Exchange a Google OAuth authorization code (or GIS credential) for session tokens.
+ * Body: { code } OR { credential } (ID token).
+ */
+async function googleExchange(req, res) {
+  const code = req.body?.code;
+  const credential = req.body?.credential;
+
+  let auth;
+  if (code) {
+    auth = await authService.googleAuthWithCode(String(code));
+  } else if (credential) {
+    auth = await authService.googleAuth({ credential: String(credential) });
+  } else {
+    return res.status(httpStatus.StatusCodes.BAD_REQUEST).json({
+      success: false,
+      message: 'Provide Google authorization code or credential',
+      errors: [],
+    });
+  }
+
+  setRefreshCookie(res, auth.refreshToken);
+  res.status(httpStatus.StatusCodes.OK).json({
+    success: true,
+    message: 'Signed in with Google',
+    data: {
+      user: auth.user,
+      accessToken: auth.accessToken,
+      refreshToken: auth.refreshToken,
+    },
   });
 }
 
@@ -206,6 +253,7 @@ module.exports = {
   logout,
   logoutAllDevices,
   googleAuth,
+  googleExchange,
   googleStart,
   googleCallback,
   forgotPassword,

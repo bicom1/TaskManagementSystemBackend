@@ -173,6 +173,13 @@ class AiService {
         throw ApiError.serviceUnavailable('OpenAI API key is invalid. Check OPENAI_API_KEY on the server.');
       }
       if (status === 429) {
+        const msg = String(err?.message || '');
+        if (/quota|billing|credits/i.test(msg)) {
+          throw new ApiError(
+            503,
+            'OpenAI has no credits remaining. Add billing credits at platform.openai.com, then retry.'
+          );
+        }
         throw new ApiError(429, 'AI rate limit reached. Please wait a moment and try again.');
       }
 

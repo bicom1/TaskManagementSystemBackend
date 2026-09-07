@@ -197,7 +197,7 @@ class UserService {
 
     const isMatch = await user.comparePassword(currentPassword);
     if (!isMatch) {
-      throw ApiError.unauthorized('Current password is incorrect');
+      throw ApiError.badRequest('Current password is incorrect');
     }
 
     user.password = newPassword;

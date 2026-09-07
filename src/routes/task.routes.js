@@ -4,6 +4,7 @@ const authenticate = require('../middlewares/auth.middleware');
 const { loadActorContext } = require('../middlewares/permission.middleware');
 const validate = require('../middlewares/validate.middleware');
 const upload = require('../middlewares/upload.middleware');
+const { validateObjectIdParam } = require('../middlewares/validateObjectId.middleware');
 const { createTaskSchema, updateTaskSchema, moveTaskSchema } = require('../validators/task.validator');
 
 const router = Router();
@@ -11,21 +12,30 @@ router.use(authenticate);
 router.use(loadActorContext);
 
 router.get('/approvals/pending', controller.getPendingApprovals);
-router.get('/board/:projectId', controller.getBoard);
+router.get('/board/:projectId', validateObjectIdParam('projectId'), controller.getBoard);
 
 router.post('/', validate(createTaskSchema), controller.create);
-router.post('/:id/attachments', upload.single('file'), controller.uploadAttachment);
+router.post(
+  '/:id/attachments',
+  validateObjectIdParam('id'),
+  upload.single('file'),
+  controller.uploadAttachment
+);
 
-// Specific :id actions before generic :id routes
-router.patch('/:id/approve', controller.approve);
-router.patch('/:id/reject', controller.reject);
-router.patch('/:id/advance', controller.advance);
-router.patch('/:id/move', validate(moveTaskSchema), controller.move);
-router.patch('/:id', validate(updateTaskSchema), controller.update);
+router.patch('/:id/approve', validateObjectIdParam('id'), controller.approve);
+router.patch('/:id/reject', validateObjectIdParam('id'), controller.reject);
+router.patch('/:id/advance', validateObjectIdParam('id'), controller.advance);
+router.patch(
+  '/:id/move',
+  validateObjectIdParam('id'),
+  validate(moveTaskSchema),
+  controller.move
+);
+router.patch('/:id', validateObjectIdParam('id'), validate(updateTaskSchema), controller.update);
 
-router.get('/:id/subtasks', controller.getSubtasks);
-router.get('/:id/activity', controller.getActivity);
-router.get('/:id', controller.getById);
-router.delete('/:id', controller.remove);
+router.get('/:id/subtasks', validateObjectIdParam('id'), controller.getSubtasks);
+router.get('/:id/activity', validateObjectIdParam('id'), controller.getActivity);
+router.get('/:id', validateObjectIdParam('id'), controller.getById);
+router.delete('/:id', validateObjectIdParam('id'), controller.remove);
 
 module.exports = router;

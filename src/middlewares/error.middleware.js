@@ -1,13 +1,13 @@
 const httpStatus = require('http-status-codes');
 const env = require('../config/env');
-const logger = require('../config/logger'); // Winston logger, wired up in the core setup
+const logger = require('../config/logger');
 const ApiError = require('../utils/ApiError.util');
 
 // eslint-disable-next-line no-unused-vars
 function errorHandler(err, req, res, next) {
   let error = err;
 
-  // Mongo duplicate key → conflict (do not leak raw driver text)
+  // Mongo duplicate key → conflict
   if (err?.code === 11000 && !(err instanceof ApiError)) {
     const fields = Object.keys(err.keyPattern || err.keyValue || {});
     const field = fields[0] || 'field';
@@ -18,6 +18,15 @@ function errorHandler(err, req, res, next) {
           ? 'This Google account is already linked to an existing account. Please log in.'
           : 'Duplicate value';
     error = ApiError.conflict(message);
+  } else if (err?.name === 'CastError' && !(err instanceof ApiError)) {
+    // Malformed ObjectId / bad path param → 400 (not 500)
+    const path = err.path || 'id';
+    error = ApiError.badRequest(`Invalid ${path}`);
+  } else if (err?.name === 'ValidationError' && !(err instanceof ApiError)) {
+    const details = Object.values(err.errors || {})
+      .map((e) => ({ field: e.path, message: e.message }))
+      .filter((e) => e.message);
+    error = ApiError.badRequest(details[0]?.message || 'Validation failed', details);
   } else if (!(error instanceof ApiError)) {
     const statusCode = error.statusCode || httpStatus.StatusCodes.INTERNAL_SERVER_ERROR;
     const message = error.message || 'Internal server error';

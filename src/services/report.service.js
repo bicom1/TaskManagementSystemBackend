@@ -10,6 +10,10 @@ const { ROLES } = require('../constants/roles.constant');
 const ApiError = require('../utils/ApiError.util');
 
 function toObjectId(projectId) {
+  if (!mongoose.Types.ObjectId.isValid(String(projectId))) {
+    const ApiError = require('../utils/ApiError.util');
+    throw ApiError.badRequest('Invalid projectId');
+  }
   return new mongoose.Types.ObjectId(projectId);
 }
 

@@ -222,6 +222,12 @@ router.post(
 );
 
 /**
+ * Exchange Google OAuth code (or ID token) — used by Postman / mobile clients.
+ * Body: { "code": "..." } or { "credential": "..." }
+ */
+router.post('/google/exchange', authLimiter, authController.googleExchange);
+
+/**
  * @swagger
  * /auth/refresh:
  *   post:

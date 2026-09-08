@@ -212,6 +212,9 @@ router.post(
  */
 router.get('/google', authController.googleStart);
 
+/** Invite accept: validate token, then start Google OAuth */
+router.get('/google/invite', authController.googleInviteStart);
+
 router.get('/google/callback', authController.googleCallback);
 
 router.post(

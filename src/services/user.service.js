@@ -621,11 +621,15 @@ class UserService {
       inviteToken: hashed,
       inviteTokenExpires: { $gt: new Date() },
     })
-      .select('name email role jobTitle invitePending department')
+      .select('name email role jobTitle invitePending department googleId')
       .populate('department', 'name code')
       .lean();
     if (!user) throw ApiError.badRequest('Invite link is invalid or has expired');
-    return user;
+    if (user.invitePending === false && user.googleId) {
+      throw ApiError.badRequest('This invite was already accepted. Sign in with Google instead.');
+    }
+    const { googleId: _g, ...safe } = user;
+    return safe;
   }
 
   /**

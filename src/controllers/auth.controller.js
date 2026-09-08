@@ -227,8 +227,19 @@ async function googleStart(req, res) {
     try {
       const invite = await authService.resolveInviteByToken(inviteToken);
       if (invite?.email) loginHint = invite.email;
+      else {
+        // Invalid/expired invite — send back to accept page instead of Google
+        return loginRedirect(
+          res,
+          null,
+          'invite_expired',
+          clientUrl,
+          null,
+          inviteToken
+        );
+      }
     } catch {
-      /* preview may fail; still start Google with provided hint */
+      /* still start Google with provided hint */
     }
   }
 
@@ -254,6 +265,29 @@ async function googleStart(req, res) {
 
   const url = authService.getGoogleAuthUrl(state, { loginHint });
   res.redirect(url);
+}
+
+/**
+ * Invite-only Google start — validates the invite token before redirecting to Google.
+ * GET /auth/google/invite?token=...&clientUrl=...
+ */
+async function googleInviteStart(req, res) {
+  const clientUrl = resolveClientUrlFromRequest(req);
+  const inviteToken = sanitizeInviteToken(req.query.token || req.query.inviteToken);
+  if (!inviteToken) {
+    return loginRedirect(res, null, 'invite_expired', clientUrl);
+  }
+
+  const invite = await authService.resolveInviteByToken(inviteToken);
+  if (!invite?.email) {
+    return loginRedirect(res, null, 'invite_expired', clientUrl, null, inviteToken);
+  }
+
+  // Re-enter the shared Google start with a verified invite
+  req.query.inviteToken = inviteToken;
+  req.query.loginHint = invite.email;
+  req.query.clientUrl = clientUrl;
+  return googleStart(req, res);
 }
 
 /** Google redirects here with ?code= */
@@ -339,6 +373,7 @@ module.exports = {
   googleAuth,
   googleExchange,
   googleStart,
+  googleInviteStart,
   googleCallback,
   forgotPassword,
   resetPassword,

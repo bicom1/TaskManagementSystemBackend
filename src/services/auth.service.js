@@ -330,8 +330,7 @@ class AuthService {
   }
 
   /**
-   * Activate an invited user via Google — uses document.save() to avoid
-   * update-validator edge cases that blocked new invitees.
+   * Activate an invited user via Google — atomic $set/$unset (no save validators).
    */
   async #linkGoogleAndAcceptInvite(user, { googleId, email, name, avatarUrl }) {
     this.#assertGoogleInviteValid(user);
@@ -345,46 +344,56 @@ class AuthService {
       );
     }
 
-    // googleId already used by a different account?
     const taken = await userRepository.findByGoogleId(googleId);
     if (taken && String(taken._id) !== String(user._id)) {
       throw ApiError.conflict(
-        'This Google account is already linked to another BIWORKSPACE user. Use the Google account for the invited email, or ask your Superadmin to re-invite.'
+        'This Google account is already linked to another BIWORKSPACE user. Use the Google account for the invited email.'
       );
     }
 
     const User = require('../models/user.model');
-    const doc = await User.findById(user._id).select(
-      '+password +inviteToken +inviteTokenExpires'
-    );
-    if (!doc) {
-      throw ApiError.notFound('Invited user not found');
-    }
+    const $set = {
+      googleId,
+      authProvider: 'google',
+      invitePending: false,
+      isActive: true,
+      deactivatedAt: null,
+    };
+    if (avatarUrl) $set.avatarUrl = avatarUrl;
+    if (name && String(name).trim()) $set.name = String(name).trim();
 
-    doc.googleId = googleId;
-    doc.authProvider = 'google';
-    doc.invitePending = false;
-    doc.inviteToken = undefined;
-    doc.inviteTokenExpires = undefined;
-    doc.password = undefined;
-    doc.isActive = true;
-    if (avatarUrl) doc.avatarUrl = avatarUrl;
-    if (name && name.trim()) doc.name = name.trim();
-
+    let result;
     try {
-      await doc.save();
+      result = await User.updateOne(
+        { _id: user._id },
+        {
+          $set,
+          $unset: {
+            password: 1,
+            inviteToken: 1,
+            inviteTokenExpires: 1,
+          },
+        }
+      );
     } catch (err) {
       if (err?.code === 11000) {
         throw ApiError.conflict(
-          'Could not link Google account (already in use). Try again with the invited Google email.'
+          'This Google account is already linked to another BIWORKSPACE user. Use the Google account for the invited email.'
         );
       }
-      logger.error('Invite Google accept save failed', err);
+      logger.error('Invite Google accept update failed', err);
       throw ApiError.badRequest(
         err?.message || 'Could not activate invite with Google. Please try again.'
       );
     }
 
+    if (!result || (result.matchedCount === 0 && result.n === 0)) {
+      throw ApiError.notFound('Invited user not found');
+    }
+
+    const doc = await User.findById(user._id);
+    if (!doc) throw ApiError.notFound('Invited user not found after activate');
+    logger.info(`Invite accepted via Google for ${doc.email} id=${doc._id}`);
     return doc;
   }
 
@@ -411,43 +420,50 @@ class AuthService {
     }
 
     // ── 0) Invite-token path (new invited users) ──────────────────────────
+    // Soft-fail: if the token is stale/missing in DB, continue to email match
+    // so a valid invited Gmail can still activate.
     const rawInvite = String(inviteToken || '').trim();
     if (rawInvite) {
       const inviteUser = await this.#findInviteUserByRawToken(rawInvite);
-      if (!inviteUser) {
-        throw ApiError.forbidden(
-          'Your invitation has expired. Ask your admin to send a new invite.'
-        );
-      }
+      if (inviteUser) {
+        const invitedEmail = String(inviteUser.email || '')
+          .trim()
+          .toLowerCase();
+        if (invitedEmail !== email) {
+          throw ApiError.forbidden(
+            `wrong_google_email: Sign in with Google using ${invitedEmail} — the same email you were invited with.`
+          );
+        }
 
-      const invitedEmail = String(inviteUser.email || '')
-        .trim()
-        .toLowerCase();
-      if (invitedEmail !== email) {
-        throw ApiError.forbidden(
-          `wrong_google_email: Sign in with Google using ${invitedEmail} — the same email you were invited with.`
-        );
+        let activated = await this.#linkGoogleAndAcceptInvite(inviteUser, {
+          googleId,
+          email,
+          name,
+          avatarUrl,
+        });
+        await userRepository.updateLastLogin(activated._id);
+        activated = await userRepository.findById(activated._id);
+        const tokens = this.#issueTokens(activated);
+        return { user: activated.toSafeObject(), ...tokens };
       }
-
-      let activated = await this.#linkGoogleAndAcceptInvite(inviteUser, {
-        googleId,
-        email,
-        name,
-        avatarUrl,
-      });
-      await userRepository.updateLastLogin(activated._id);
-      activated = await userRepository.findById(activated._id);
-      const tokens = this.#issueTokens(activated);
-      return { user: activated.toSafeObject(), ...tokens };
+      logger.warn(
+        `Invite token present but not found/expired; falling back to email match for ${email}`
+      );
     }
 
     const expected = String(expectedEmail || '')
       .trim()
       .toLowerCase();
     if (expected && expected !== email) {
-      throw ApiError.forbidden(
-        `wrong_google_email: Sign in with Google using ${expected} — the same email you were invited with.`
-      );
+      // Hint mismatch: still allow if this Google email has its own pending invite
+      const pendingForEmail = await userRepository.findByEmailInsensitiveWithInvite(email, {
+        withPassword: true,
+      });
+      if (!pendingForEmail?.invitePending) {
+        throw ApiError.forbidden(
+          `wrong_google_email: Sign in with Google using ${expected} — the same email you were invited with.`
+        );
+      }
     }
 
     // ── 1) Already linked to this Google account ──────────────────────────
@@ -568,10 +584,11 @@ class AuthService {
     if (token.length < 16) return null;
     const hashed = crypto.createHash('sha256').update(token).digest('hex');
     const User = require('../models/user.model');
+    // Match by token+expiry. Do not require invitePending — preview can succeed
+    // while a partial row still needs Google activation.
     return User.findOne({
       inviteToken: hashed,
       inviteTokenExpires: { $gt: new Date() },
-      invitePending: true,
     })
       .select('+password +inviteToken +inviteTokenExpires')
       .exec();
@@ -646,6 +663,23 @@ class AuthService {
       name: user.name || null,
       inviteToken: String(rawToken || '').trim(),
     };
+  }
+
+  /**
+   * Smoke/tests only: activate an invite as if Google returned this profile.
+   * Not exposed over HTTP.
+   */
+  async acceptInviteWithGoogleProfile({ inviteToken, email, googleId, name, avatarUrl }) {
+    return this.#loginWithGoogleProfile(
+      {
+        email,
+        email_verified: true,
+        sub: String(googleId),
+        name: name || email,
+        picture: avatarUrl || null,
+      },
+      { inviteToken, expectedEmail: email }
+    );
   }
 
   #issueTokens(user) {

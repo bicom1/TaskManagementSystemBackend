@@ -94,8 +94,8 @@ async function findOrCreateTeamByName(name, departmentId, actor) {
   });
   if (existing) return existing;
 
-  if (actor.role !== ROLES.SUPER_ADMIN && actor.role !== ROLES.DEPT_HEAD) {
-    throw ApiError.forbidden('Only Super Admin or Department Head can create a team while inviting');
+  if (actor.role !== ROLES.SUPER_ADMIN && actor.role !== ROLES.ADMIN) {
+    throw ApiError.forbidden('Only Superadmin or Admin can create a team while inviting');
   }
 
   return Team.create({
@@ -111,12 +111,16 @@ class UserService {
     policy.assertPermission(actor, PERMISSIONS.USER_VIEW);
 
     let filter = policy.userListFilter(actor);
-    if (!includeInactive || actor.role !== ROLES.SUPER_ADMIN) {
-      filter = { ...filter, isActive: true };
-    } else if (includeInactive === 'all') {
-      // no isActive constraint for SA
+    // All People never shows soft-deleted / inactive accounts unless SA explicitly asks
+    if (includeInactive === 'all' && actor.role === ROLES.SUPER_ADMIN) {
       const { isActive: _ia, ...rest } = filter;
       filter = rest;
+    } else {
+      filter = {
+        ...filter,
+        isActive: true,
+        email: { $not: { $regex: '^deleted_', $options: 'i' } },
+      };
     }
 
     if (q) {

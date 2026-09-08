@@ -17,19 +17,23 @@ async function resolveActor(actor) {
   return actor;
 }
 
+/**
+ * Team lifecycle (create / update / delete) is Super Admin only.
+ * Membership changes stay on TEAM_MANAGE so leads and admins keep working.
+ */
+function assertSuperAdmin(actor, action) {
+  if (actor?.role !== ROLES.SUPER_ADMIN) {
+    throw ApiError.forbidden(`Only Super Admin can ${action}`);
+  }
+}
+
 class TeamService {
   async create(data, actorInput) {
     const actor = await resolveActor(actorInput);
     policy.assertPermission(actor, PERMISSIONS.TEAM_MANAGE);
 
-    // Only Super Admin and Department Heads create teams
-    if (actor.role !== ROLES.SUPER_ADMIN && actor.role !== ROLES.DEPT_HEAD) {
-      throw ApiError.forbidden('Only Super Admin or Department Head can create teams');
-    }
-
-    if (actor.role !== ROLES.SUPER_ADMIN) {
-      policy.assertDepartmentManage(actor, data.department, 'create teams in this department');
-    }
+    // Only Super Admin creates teams
+    assertSuperAdmin(actor, 'create teams');
 
     const team = await teamRepository.create(data);
 
@@ -129,18 +133,37 @@ class TeamService {
     const actor = await resolveActor(actorInput);
     const existing = await teamRepository.findById(id);
     if (!existing) throw ApiError.notFound('Team not found');
-    policy.assertTeamManage(actor, existing);
-
-    // Non-SA cannot move teams across departments
-    if (
-      updates.department &&
-      actor.role !== ROLES.SUPER_ADMIN &&
-      String(updates.department) !== String(existing.department)
-    ) {
-      throw ApiError.forbidden('Only Super Admin can move teams between departments');
-    }
+    assertSuperAdmin(actor, 'update team details');
 
     const team = await teamRepository.updateById(id, updates);
+    if (!team) throw ApiError.notFound('Team not found');
+
+    // Keep the lead on the roster when it changes
+    if (updates.lead && String(updates.lead) !== String(existing.lead)) {
+      await teamRepository.addMember(team._id, updates.lead);
+    }
+
+    return teamRepository.findById(team._id, {
+      populate: [
+        { path: 'lead', select: 'name avatarUrl jobTitle role' },
+        { path: 'department', select: 'name code' },
+        { path: 'members', select: 'name avatarUrl email jobTitle role' },
+      ],
+    });
+  }
+
+  /**
+   * Soft delete — mirrors department deactivation. Teams are filtered out of
+   * every list by `isActive`, so history on projects and tasks stays intact.
+   */
+  async deactivate(id, actorInput) {
+    const actor = await resolveActor(actorInput);
+    assertSuperAdmin(actor, 'delete teams');
+
+    const existing = await teamRepository.findById(id);
+    if (!existing) throw ApiError.notFound('Team not found');
+
+    const team = await teamRepository.updateById(id, { isActive: false });
     if (!team) throw ApiError.notFound('Team not found');
     return team;
   }

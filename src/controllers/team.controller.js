@@ -30,6 +30,11 @@ async function update(req, res) {
   res.status(httpStatus.StatusCodes.OK).json({ success: true, data: team });
 }
 
+async function deactivate(req, res) {
+  const team = await teamService.deactivate(req.params.id, actorFrom(req));
+  res.status(httpStatus.StatusCodes.OK).json({ success: true, data: team });
+}
+
 async function addMember(req, res) {
   const team = await teamService.addMember(
     req.params.id,
@@ -49,4 +54,4 @@ async function removeMember(req, res) {
   res.status(httpStatus.StatusCodes.OK).json({ success: true, data: team });
 }
 
-module.exports = { create, list, getById, update, addMember, removeMember };
+module.exports = { create, list, getById, update, deactivate, addMember, removeMember };

@@ -24,6 +24,11 @@ router.patch(
   validate(updateTeamSchema),
   controller.update
 );
+router.delete(
+  '/:id',
+  requirePermission(PERMISSIONS.TEAM_MANAGE),
+  controller.deactivate
+);
 router.post(
   '/:id/members',
   requirePermission(PERMISSIONS.TEAM_MANAGE),

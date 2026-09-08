@@ -98,10 +98,10 @@ class AuthService {
       throw ApiError.unauthorized('Invalid email or password');
     }
 
-    // Google-only accounts without a local password
-    if (user.authProvider === 'google' && !user.password) {
+    // Google-only / invited accounts cannot use email+password
+    if (user.authProvider === 'google' || user.invitePending) {
       throw ApiError.unauthorized(
-        'This account uses Google Sign-In. Please continue with Google.'
+        'This account uses Google Sign-In. Please continue with Google using your invited email.'
       );
     }
 
@@ -122,11 +122,6 @@ class AuthService {
 
     await userRepository.updateLastLogin(user._id);
 
-    if (user.invitePending) {
-      await userRepository.updateById(user._id, { invitePending: false });
-      user.invitePending = false;
-    }
-
     const tokens = this.#issueTokens(user);
 
     return { user: user.toSafeObject(), ...tokens };
@@ -142,6 +137,15 @@ class AuthService {
         message:
           'If an account exists for that email, we sent a one-time code from BIWORKSPACE.',
         emailSent: false,
+      };
+    }
+
+    if (user.authProvider === 'google' || user.invitePending) {
+      return {
+        message:
+          'This account uses Google Sign-In. Use Continue with Google on the login page instead of resetting a password.',
+        emailSent: false,
+        googleOnly: true,
       };
     }
 
@@ -294,13 +298,10 @@ class AuthService {
     const updates = {
       googleId,
       invitePending: false,
+      // Keep password login for existing local accounts; Google-only otherwise
+      authProvider: user.password ? 'local' : 'google',
     };
     if (avatarUrl) updates.avatarUrl = avatarUrl;
-    if (user.password) {
-      updates.authProvider = 'local';
-    } else {
-      updates.authProvider = 'google';
-    }
     if (user.email !== email) {
       updates.email = email;
     }
@@ -329,7 +330,8 @@ class AuthService {
       invitePending: false,
       inviteToken: null,
       inviteTokenExpires: null,
-      authProvider: user.password ? 'local' : 'google',
+      authProvider: 'google',
+      password: null,
     };
     if (avatarUrl) updates.avatarUrl = avatarUrl;
     if (name && name !== user.name) updates.name = name;
@@ -348,6 +350,8 @@ class AuthService {
           invitePending: false,
           inviteToken: null,
           inviteTokenExpires: null,
+          authProvider: 'google',
+          password: null,
           ...(avatarUrl ? { avatarUrl } : {}),
         });
       }

@@ -438,6 +438,18 @@ class TaskService {
     const task = await taskRepository.deleteById(id);
     if (!task) throw ApiError.notFound('Task not found');
     emitTaskEvent('task:deleted', task, existing.project?._id || existing.project);
+
+    await notifySuperAdmins({
+      actorId: actor.id,
+      type: NOTIFICATION_TYPES.TASK_DELETED,
+      message: `Task "${existing.title || 'Untitled'}" was deleted`,
+      entityType: 'Task',
+      entityId: id,
+      emailSubject: `Task deleted: ${existing.title || 'Untitled'}`,
+      emailToo: false,
+      metadata: { projectId: existing.project?._id || existing.project },
+    });
+
     return task;
   }
 
@@ -449,7 +461,8 @@ class TaskService {
       const id = a?._id || a;
       if (id) ids.add(String(id));
     });
-    if (actorId) ids.add(String(actorId));
+    // Associated people only — not the actor, and not a broadcast to all members
+    if (actorId) ids.delete(String(actorId));
 
     const statusLabel = String(newStatus).replace(/_/g, ' ');
     const projectKey = projectId ? String(projectId) : '';
@@ -465,12 +478,23 @@ class TaskService {
             entityType: 'Task',
             entityId: task._id,
             metadata: { projectId: projectKey },
-            emailToo: recipientId !== String(actorId),
+            emailToo: true,
             emailSubject: `Task updated: ${task.title}`,
           })
           .catch(() => {})
       )
     );
+
+    await notifySuperAdmins({
+      actorId,
+      type: NOTIFICATION_TYPES.TASK_STATUS_CHANGED,
+      message: `"${task.title}" moved to ${statusLabel}`,
+      entityType: 'Task',
+      entityId: task._id,
+      emailToo: false,
+      metadata: { projectId: projectKey },
+      excludeIds: [...ids],
+    });
   }
 
   async #notifyAssignees(task, actorId, projectIdOverride = null) {

@@ -234,6 +234,7 @@ async function forgotPassword(req, res) {
       emailTo: result.emailTo,
       emailFrom: result.emailFrom,
       expiresInMinutes: result.expiresInMinutes,
+      googleOnly: Boolean(result.googleOnly),
     },
   });
 }

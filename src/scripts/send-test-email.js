@@ -35,7 +35,6 @@ async function main() {
     html: inviteEmail({
       recipientName: 'Test User',
       inviterName: 'BIWORKSPACE Admin',
-      temporaryPassword: 'TestPass123',
       loginUrl: `${env.CLIENT_URL}/login`,
       acceptUrl: `${env.CLIENT_URL}/accept-invite?token=test`,
       emailTo: to,

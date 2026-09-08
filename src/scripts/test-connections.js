@@ -31,7 +31,7 @@ async function main() {
       html: inviteEmail({
         recipientName: 'Test User',
         inviterName: 'BIWORKSPACE Admin',
-        temporaryPassword: 'TestPass123',
+        temporaryPassword: undefined, // invited users use Google Sign-In
         loginUrl: `${env.CLIENT_URL}/login`,
         emailTo: testTo,
       }),

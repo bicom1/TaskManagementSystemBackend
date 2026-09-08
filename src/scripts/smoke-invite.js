@@ -50,7 +50,8 @@ function request(method, path, body, token) {
   );
   console.log('invite status', invite.status);
   console.log('invite user', invite.body?.data?.user?.email, invite.body?.data?.user?.invitePending);
-  console.log('temp password present', Boolean(invite.body?.data?.temporaryPassword));
+  console.log('google-only invite (no temp password)', !invite.body?.data?.temporaryPassword);
+  console.log('acceptUrl', invite.body?.data?.acceptUrl);
 
   const users = await request('GET', '/api/v1/users', null, token);
   console.log('users count', users.body?.data?.length);

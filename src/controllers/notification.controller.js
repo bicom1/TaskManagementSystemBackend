@@ -3,17 +3,21 @@ const notificationService = require('../services/notification.service');
 
 async function list(req, res) {
   const { page = 1, limit = 20 } = req.query;
-  const result = await notificationService.list(req.user.id, { page: Number(page), limit: Number(limit) });
+  const result = await notificationService.list(
+    req.user.id,
+    { page: Number(page), limit: Number(limit) },
+    req.user.role
+  );
   res.status(httpStatus.StatusCodes.OK).json({ success: true, ...result });
 }
 
 async function unreadCount(req, res) {
-  const count = await notificationService.unreadCount(req.user.id);
+  const count = await notificationService.unreadCount(req.user.id, req.user.role);
   res.status(httpStatus.StatusCodes.OK).json({ success: true, data: { count } });
 }
 
 async function markAllRead(req, res) {
-  await notificationService.markAllRead(req.user.id);
+  await notificationService.markAllRead(req.user.id, req.user.role);
   res.status(httpStatus.StatusCodes.OK).json({ success: true, message: 'All notifications marked as read' });
 }
 

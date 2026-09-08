@@ -19,6 +19,7 @@ const {
 } = require('../constants/roles.constant');
 const { PERMISSIONS, getInvitableRoles } = require('../constants/permissions.constant');
 const { NOTIFICATION_TYPES } = require('../constants/notification.constant');
+const { notifySuperAdmins } = require('./notifySuperAdmins.util');
 const { sendMail } = require('../emails/mailer.util');
 const { inviteEmail } = require('../emails/templates');
 const env = require('../config/env');
@@ -28,11 +29,6 @@ const User = require('../models/user.model');
 const Department = require('../models/department.model');
 const Project = require('../models/project.model');
 const { emitUserEvent, forceDisconnectUser } = require('../socket/socket');
-
-function generateTempPassword() {
-  const suffix = crypto.randomBytes(3).toString('hex');
-  return `Welcome1${suffix}`;
-}
 
 function hashToken(raw) {
   return crypto.createHash('sha256').update(raw).digest('hex');
@@ -364,7 +360,6 @@ class UserService {
       (name && name.trim()) ||
       normalizedEmail.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 
-    const temporaryPassword = generateTempPassword();
     const { raw: inviteRaw, hashed: inviteHashed } = createInviteToken();
     const inviteExpires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
@@ -375,18 +370,25 @@ class UserService {
       getDefaultJobTitle(departmentDoc?.code, role) ||
       undefined;
 
+    /** Invited users must activate via Google Sign-In with the invited email. */
+    const applyGoogleInviteFields = (doc) => {
+      doc.name = displayName;
+      doc.role = role || ROLES.EMPLOYEE;
+      doc.jobTitle = resolvedJobTitle || doc.jobTitle || null;
+      doc.department = resolvedDepartment;
+      doc.invitePending = true;
+      doc.invitedBy = actor.id;
+      doc.inviteToken = inviteHashed;
+      doc.inviteTokenExpires = inviteExpires;
+      doc.isActive = true;
+      doc.authProvider = 'google';
+      doc.password = undefined;
+      doc.googleId = undefined;
+    };
+
     let user;
     if (isReinvite) {
-      existingUser.name = displayName;
-      existingUser.password = temporaryPassword;
-      existingUser.role = role || ROLES.EMPLOYEE;
-      existingUser.jobTitle = resolvedJobTitle || existingUser.jobTitle || null;
-      existingUser.department = resolvedDepartment;
-      existingUser.invitePending = true;
-      existingUser.invitedBy = actor.id;
-      existingUser.inviteToken = inviteHashed;
-      existingUser.inviteTokenExpires = inviteExpires;
-      existingUser.isActive = true;
+      applyGoogleInviteFields(existingUser);
       await existingUser.save();
       user = existingUser;
     } else {
@@ -394,7 +396,7 @@ class UserService {
         user = await userRepository.create({
           name: displayName,
           email: normalizedEmail,
-          password: temporaryPassword,
+          authProvider: 'google',
           role: role || ROLES.EMPLOYEE,
           jobTitle: resolvedJobTitle || null,
           department: resolvedDepartment,
@@ -421,16 +423,7 @@ class UserService {
               dup.isActive === false ||
               !dup.lastLoginAt);
           if (dup && dupCanReinvite) {
-            dup.name = displayName;
-            dup.password = temporaryPassword;
-            dup.role = role || ROLES.EMPLOYEE;
-            dup.jobTitle = resolvedJobTitle || dup.jobTitle || null;
-            dup.department = resolvedDepartment;
-            dup.invitePending = true;
-            dup.invitedBy = actor.id;
-            dup.inviteToken = inviteHashed;
-            dup.inviteTokenExpires = inviteExpires;
-            dup.isActive = true;
+            applyGoogleInviteFields(dup);
             await dup.save();
             user = dup;
           } else {
@@ -478,7 +471,6 @@ class UserService {
       to: normalizedEmail,
       recipientName: displayName,
       inviterName: inviter?.name || 'A teammate',
-      temporaryPassword,
       loginUrl,
       acceptUrl,
       emailTo: normalizedEmail,
@@ -500,10 +492,9 @@ class UserService {
         `Hi ${displayName},`,
         `${inviter?.name || 'A teammate'} invited you to join BIWORKSPACE as ${getInviteRoleLabel(departmentDoc?.code, role)}.`,
         ``,
-        `Accept invite: ${acceptUrl}`,
-        `Sign in: ${loginUrl}`,
-        `Email: ${normalizedEmail}`,
-        `Temporary password: ${temporaryPassword}`,
+        `Accept invite & sign in with Google: ${acceptUrl}`,
+        `Or go to login and choose Continue with Google: ${loginUrl}`,
+        `Use this Google account email: ${normalizedEmail}`,
       ].join('\n'),
     };
 
@@ -554,10 +545,20 @@ class UserService {
         message: resolvedTeamId
           ? `${inviter?.name || 'Admin'} invited you and added you to a team`
           : `${inviter?.name || 'Admin'} invited you to the workspace`,
-        entityType: 'Project',
+        entityType: 'User',
         entityId: user._id,
       })
       .catch(() => {});
+
+    await notifySuperAdmins({
+      actorId: actor.id,
+      type: NOTIFICATION_TYPES.USER_INVITED,
+      message: `${inviter?.name || 'Someone'} invited ${name} (${normalizedEmail}) as ${role}`,
+      entityType: 'User',
+      entityId: user._id,
+      emailSubject: `User invited: ${name}`,
+      emailToo: false,
+    });
 
     await activityService
       .record({
@@ -578,7 +579,6 @@ class UserService {
 
     return {
       user: fresh.toSafeObject(),
-      temporaryPassword,
       inviteToken: inviteRaw,
       acceptUrl,
       emailSent: emailDelivered,
@@ -594,39 +594,20 @@ class UserService {
       loginUrl,
       shareMessage: [
         `You're invited to BIWORKSPACE by ${inviter?.name || 'a teammate'}.`,
-        `Accept invite: ${acceptUrl}`,
-        `Or login: ${loginUrl}`,
-        `Email: ${normalizedEmail}`,
-        `Temporary password: ${temporaryPassword}`,
+        `Accept invite & sign in with Google: ${acceptUrl}`,
+        `Or login → Continue with Google: ${loginUrl}`,
+        `Google email must be: ${normalizedEmail}`,
       ].join('\n'),
     };
   }
 
   /**
-   * Accept invite via emailed token — set password and activate.
+   * Password accept is disabled — invited users must sign in with Google.
    */
-  async acceptInvite({ token, password, name }) {
-    if (!token) throw ApiError.badRequest('Invite token is required');
-    const hashed = hashToken(token);
-
-    const user = await User.findOne({
-      inviteToken: hashed,
-      inviteTokenExpires: { $gt: new Date() },
-    }).select('+password +inviteToken +inviteTokenExpires');
-
-    if (!user) {
-      throw ApiError.badRequest('Invite link is invalid or has expired');
-    }
-
-    if (name && name.trim()) user.name = name.trim();
-    user.password = password;
-    user.invitePending = false;
-    user.inviteToken = null;
-    user.inviteTokenExpires = null;
-    user.tokenVersion = (user.tokenVersion || 0) + 1;
-    await user.save();
-
-    return user.toSafeObject();
+  async acceptInvite() {
+    throw ApiError.badRequest(
+      'Invited accounts must sign in with Google using the invited email address.'
+    );
   }
 
   async previewInvite(token) {
@@ -715,6 +696,15 @@ class UserService {
         name: target.name,
         message: 'Your account has been deactivated. Please contact your administrator.',
       });
+      await notifySuperAdmins({
+        actorId: actor.id,
+        type: NOTIFICATION_TYPES.USER_DEACTIVATED,
+        message: `User "${target.name}" was deactivated`,
+        entityType: 'User',
+        entityId: id,
+        emailSubject: `User deactivated: ${target.name}`,
+        emailToo: false,
+      });
     }
 
     return safe;
@@ -776,6 +766,16 @@ class UserService {
       reason: 'deleted',
       name: displayName,
       message: `Your account has been deleted. Please contact your administrator.`,
+    });
+
+    await notifySuperAdmins({
+      actorId: actor.id,
+      type: NOTIFICATION_TYPES.USER_DELETED,
+      message: `User "${displayName}" was deleted`,
+      entityType: 'User',
+      entityId: id,
+      emailSubject: `User deleted: ${displayName}`,
+      emailToo: false,
     });
 
     return safe;

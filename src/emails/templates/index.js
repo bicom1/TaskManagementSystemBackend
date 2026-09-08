@@ -21,7 +21,7 @@ function welcomeEmail({ name }) {
   `;
 }
 
-function inviteEmail({ recipientName, inviterName, temporaryPassword, loginUrl, acceptUrl, emailTo }) {
+function inviteEmail({ recipientName, inviterName, loginUrl, acceptUrl, emailTo }) {
   const primaryUrl = acceptUrl || loginUrl;
   const safeName = recipientName || 'there';
   return `
@@ -41,20 +41,19 @@ function inviteEmail({ recipientName, inviterName, temporaryPassword, loginUrl, 
             This email was sent to <strong>${emailTo || 'your inbox'}</strong> from BIWORKSPACE.
           </p>
           <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:16px;margin:20px 0;">
-            <p style="margin:0 0 8px;font-size:13px;color:#64748b;text-transform:uppercase;letter-spacing:0.04em;">Your login details</p>
-            <p style="margin:0 0 6px;"><strong>Email:</strong> ${emailTo || '—'}</p>
-            <p style="margin:0;"><strong>Temporary password:</strong>
-              <code style="background:#fff;border:1px solid #e2e8f0;padding:2px 8px;border-radius:4px;">${temporaryPassword}</code>
-            </p>
+            <p style="margin:0 0 8px;font-size:13px;color:#64748b;text-transform:uppercase;letter-spacing:0.04em;">How to join</p>
+            <p style="margin:0 0 6px;"><strong>1.</strong> Open the invite link below</p>
+            <p style="margin:0 0 6px;"><strong>2.</strong> Sign in with <strong>Google</strong></p>
+            <p style="margin:0;"><strong>3.</strong> Use this Google account: <strong>${emailTo || '—'}</strong></p>
           </div>
           <p style="margin:24px 0;">
             <a href="${primaryUrl}" style="display:inline-block;background:#024ad8;color:#fff;padding:14px 28px;text-decoration:none;border-radius:6px;font-weight:700;font-size:14px;">
-              ${acceptUrl ? 'Accept invite &amp; set password' : 'Sign in to BIWORKSPACE'}
+              ${acceptUrl ? 'Accept invite &amp; continue with Google' : 'Sign in with Google'}
             </a>
           </p>
-          ${acceptUrl && loginUrl ? `<p style="font-size:13px;color:#64748b;">Or <a href="${loginUrl}" style="color:#024ad8;">sign in directly</a>.</p>` : ''}
+          ${acceptUrl && loginUrl ? `<p style="font-size:13px;color:#64748b;">Or open <a href="${loginUrl}" style="color:#024ad8;">login</a> and choose <strong>Continue with Google</strong>.</p>` : ''}
           <p style="color:#94a3b8;font-size:12px;margin-top:24px;line-height:1.5;">
-            This invite expires in 7 days. If you did not expect this email, you can ignore it.
+            This invite expires in 7 days. Invited accounts sign in with Google only — no password is required.
           </p>
         </div>
         <div style="background:#f8fafc;padding:14px 24px;border-top:1px solid #e5e7eb;font-size:12px;color:#64748b;">

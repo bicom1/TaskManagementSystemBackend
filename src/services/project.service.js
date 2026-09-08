@@ -360,6 +360,17 @@ class ProjectService {
       }
     );
 
+    // System event — Superadmins only (members never see SA delete actions)
+    await notifySuperAdmins({
+      actorId: actor.id,
+      type: NOTIFICATION_TYPES.PROJECT_DELETED,
+      message: `Project "${existing.name}" was deleted`,
+      entityType: 'Project',
+      entityId: id,
+      emailSubject: `Project deleted: ${existing.name}`,
+      emailToo: false,
+    });
+
     return { id, name: existing.name };
   }
 

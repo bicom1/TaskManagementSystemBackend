@@ -1,10 +1,12 @@
 const userRepository = require('../repositories/user.repository');
 const notificationService = require('./notification.service');
-const { ROLES } = require('../constants/roles.constant');
+const { ROLES, normalizeRole } = require('../constants/roles.constant');
+const { NOTIFICATION_SCOPES } = require('../constants/notification.constant');
 
 /**
- * Notify every active Super Admin (email + in-app).
- * Skips the acting user and any IDs in excludeIds (e.g. already notified attendees).
+ * Notify every active Superadmin (in-app + optional email).
+ * Skips the acting user and any IDs in excludeIds.
+ * Always uses scope=system so members never see these events.
  */
 async function notifySuperAdmins({
   actorId,
@@ -18,14 +20,20 @@ async function notifySuperAdmins({
   excludeIds = [],
 }) {
   const result = await userRepository.findPaginated(
-    { role: ROLES.SUPER_ADMIN, isActive: true },
+    {
+      role: { $in: [ROLES.SUPERADMIN, 'super_admin', ROLES.SUPER_ADMIN] },
+      isActive: true,
+    },
     { page: 1, limit: 50 }
   );
 
   const skip = new Set([String(actorId || ''), ...excludeIds.map(String)]);
   await Promise.all(
     (result.data || [])
-      .filter((admin) => !skip.has(String(admin._id)))
+      .filter((admin) => {
+        if (skip.has(String(admin._id))) return false;
+        return normalizeRole(admin.role) === ROLES.SUPERADMIN;
+      })
       .map((admin) =>
         notificationService
           .notify({
@@ -38,6 +46,7 @@ async function notifySuperAdmins({
             emailToo,
             emailSubject: emailSubject || message,
             metadata,
+            scope: NOTIFICATION_SCOPES.SYSTEM,
           })
           .catch(() => {})
       )

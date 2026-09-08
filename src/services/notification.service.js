@@ -6,6 +6,11 @@ const { sendMail } = require('../emails/mailer.util');
 const { notificationEmail } = require('../emails/templates');
 const logger = require('../config/logger');
 const { getEmailAppUrl, ensureLiveEmailUrl } = require('../utils/clientUrl.util');
+const {
+  NOTIFICATION_SCOPES,
+  SYSTEM_ONLY_TYPES,
+} = require('../constants/notification.constant');
+const { ROLES, normalizeRole } = require('../constants/roles.constant');
 
 function buildActionUrl({ entityType, entityId, metadata = {} }) {
   const base = getEmailAppUrl();
@@ -19,6 +24,8 @@ function buildActionUrl({ entityType, entityId, metadata = {} }) {
     path = `/projects/${metadata.projectId}`;
   } else if (entityType === 'Meeting') {
     path = '/home/meetings';
+  } else if (entityType === 'User') {
+    path = '/teams/people';
   }
 
   return ensureLiveEmailUrl(`${base}${path}`);
@@ -34,7 +41,6 @@ async function deliverNotificationEmail({ to, recipientName, message, actionUrl,
     subject: subject || 'You have a new update — BIWORKSPACE',
   };
 
-  // Direct send first — instant on live via Resend; queue is fallback only
   try {
     await sendMail({
       to,
@@ -57,6 +63,14 @@ async function deliverNotificationEmail({ to, recipientName, message, actionUrl,
   }
 }
 
+/** Members/Admins never see Superadmin system events in their inbox. */
+function memberVisibleFilter() {
+  return {
+    scope: { $ne: NOTIFICATION_SCOPES.SYSTEM },
+    type: { $nin: SYSTEM_ONLY_TYPES },
+  };
+}
+
 class NotificationService {
   async notify({
     recipient,
@@ -69,7 +83,24 @@ class NotificationService {
     metadata = {},
     actionUrl = null,
     emailSubject = null,
+    scope = NOTIFICATION_SCOPES.PERSONAL,
   }) {
+    const resolvedScope = SYSTEM_ONLY_TYPES.includes(type)
+      ? NOTIFICATION_SCOPES.SYSTEM
+      : scope || NOTIFICATION_SCOPES.PERSONAL;
+
+    // Never deliver system notifications to non-superadmin recipients
+    if (resolvedScope === NOTIFICATION_SCOPES.SYSTEM) {
+      try {
+        const user = await userRepository.findById(recipient);
+        if (!user || normalizeRole(user.role) !== ROLES.SUPERADMIN) {
+          return null;
+        }
+      } catch {
+        return null;
+      }
+    }
+
     const notification = await notificationRepository.create({
       recipient,
       sender,
@@ -77,12 +108,13 @@ class NotificationService {
       message,
       entityType,
       entityId,
+      scope: resolvedScope,
     });
 
     let socketPayload = notification;
     try {
       const full = await notificationRepository.findById(notification._id, {
-        populate: [{ path: 'sender', select: 'name avatarUrl' }],
+        populate: [{ path: 'sender', select: 'name avatarUrl role' }],
       });
       if (full) socketPayload = full;
     } catch {
@@ -117,27 +149,36 @@ class NotificationService {
     return notification;
   }
 
-  async list(userId, { page, limit }) {
-    return notificationRepository.findPaginated(
-      { recipient: userId },
-      {
-        page,
-        limit,
-        populate: [{ path: 'sender', select: 'name avatarUrl' }],
-      }
-    );
+  async list(userId, { page, limit }, viewerRole) {
+    const filter = { recipient: userId };
+    if (normalizeRole(viewerRole) !== ROLES.SUPERADMIN) {
+      Object.assign(filter, memberVisibleFilter());
+    }
+    return notificationRepository.findPaginated(filter, {
+      page,
+      limit,
+      populate: [{ path: 'sender', select: 'name avatarUrl role' }],
+    });
   }
 
-  async markAllRead(userId) {
-    return notificationRepository.markAllRead(userId);
+  async markAllRead(userId, viewerRole) {
+    const filter = { recipient: userId, isRead: false };
+    if (normalizeRole(viewerRole) !== ROLES.SUPERADMIN) {
+      Object.assign(filter, memberVisibleFilter());
+    }
+    return notificationRepository.model.updateMany(filter, { isRead: true }).exec();
   }
 
   async markOneRead(id, userId) {
     return notificationRepository.markOneRead(id, userId);
   }
 
-  async unreadCount(userId) {
-    return notificationRepository.unreadCount(userId);
+  async unreadCount(userId, viewerRole) {
+    const filter = { recipient: userId, isRead: false };
+    if (normalizeRole(viewerRole) !== ROLES.SUPERADMIN) {
+      Object.assign(filter, memberVisibleFilter());
+    }
+    return notificationRepository.model.countDocuments(filter);
   }
 }
 

@@ -12,6 +12,7 @@ const { sendMail } = require('../emails/mailer.util');
 const { passwordResetEmail } = require('../emails/templates');
 const logger = require('../config/logger');
 const { emailPath } = require('../utils/clientUrl.util');
+const { ROLES } = require('../constants/roles.constant');
 
 class AuthService {
   getGoogleRedirectUri() {
@@ -79,8 +80,8 @@ class AuthService {
       email: normalizedEmail,
       password,
       authProvider: 'local',
-      role: 'super_admin',
-      jobTitle: 'Super Admin',
+      role: ROLES.SUPERADMIN,
+      jobTitle: 'Superadmin',
     });
     const tokens = this.#issueTokens(user);
 
@@ -418,8 +419,8 @@ class AuthService {
             googleId,
             authProvider: 'google',
             avatarUrl,
-            role: 'super_admin',
-            jobTitle: 'Super Admin',
+            role: ROLES.SUPERADMIN,
+            jobTitle: 'Superadmin',
           });
         } else {
           throw ApiError.forbidden('You are not invited to this workspace.');

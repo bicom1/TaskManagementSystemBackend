@@ -1,10 +1,17 @@
 const { z } = require('zod');
+const { ROLE_VALUES, normalizeRole } = require('../constants/roles.constant');
+
+const roleEnum = z
+  .string()
+  .trim()
+  .transform((v) => normalizeRole(v))
+  .pipe(z.enum(ROLE_VALUES));
 
 const inviteUserSchema = z.object({
   body: z.object({
     email: z.string().trim().email('Enter a valid email'),
     name: z.string().trim().min(2, 'Name must be at least 2 characters').max(100),
-    role: z.enum(['super_admin', 'dept_head', 'team_lead', 'executive', 'employee']).optional(),
+    role: roleEnum.optional(),
     jobTitle: z.string().trim().max(100).optional(),
     department: z.string().length(24).optional(),
     /** Type a new or existing department name when not picking from the list */
@@ -47,7 +54,7 @@ const updateUserSchema = z.object({
     .object({
       name: z.string().trim().min(2).max(100).optional(),
       jobTitle: z.string().trim().max(100).nullable().optional(),
-      role: z.enum(['dept_head', 'team_lead', 'executive', 'employee']).optional(),
+      role: roleEnum.optional(),
       department: z.string().length(24).nullable().optional(),
       team: z.string().length(24).optional(),
       isActive: z.boolean().optional(),

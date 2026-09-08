@@ -335,7 +335,8 @@ class ProjectService {
 
   async delete(id, actorInput) {
     const actor = await resolveActor(actorInput);
-    policy.assertPermission(actor, PERMISSIONS.PROJECT_EDIT);
+    // SUPERADMIN only — ADMIN/MEMBER must not delete projects (enforced server-side)
+    policy.assertPermission(actor, PERMISSIONS.PROJECT_DELETE);
 
     const existing = await projectRepository.findById(id, {
       populate: [{ path: 'team', select: 'lead members department' }],

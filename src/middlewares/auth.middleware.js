@@ -2,6 +2,7 @@ const { verifyAccessToken } = require('../utils/jwt.util');
 const ApiError = require('../utils/ApiError.util');
 const { buildActorContext } = require('../services/policy.service');
 const userRepository = require('../repositories/user.repository');
+const { normalizeRole } = require('../constants/roles.constant');
 
 function decodeBearer(req) {
   const header = req.headers.authorization;
@@ -27,7 +28,7 @@ async function authenticate(req, res, next) {
     if (!user || user.isActive === false) {
       throw ApiError.unauthorized('Your account has been deactivated');
     }
-    req.user = { id: String(user._id), role: user.role };
+    req.user = { id: String(user._id), role: normalizeRole(user.role) };
     next();
   } catch (err) {
     next(err);
@@ -44,7 +45,7 @@ async function authenticateWithContext(req, res, next) {
     const context = await buildActorContext(decoded.id);
     req.user = {
       id: String(user._id),
-      role: context.role,
+      role: normalizeRole(context.role || user.role),
       departmentId: context.departmentId,
       permissions: context.permissions,
       context,

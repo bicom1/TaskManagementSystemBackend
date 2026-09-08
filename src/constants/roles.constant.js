@@ -1,29 +1,80 @@
+/**
+ * Canonical roles — SUPERADMIN | ADMIN | MEMBER only.
+ * Legacy keys (SUPER_ADMIN, DEPT_HEAD, …) alias to the same string values
+ * so existing comparisons continue to work after DB migration.
+ */
 const ROLES = Object.freeze({
-  SUPER_ADMIN: 'super_admin',
-  DEPT_HEAD: 'dept_head',
-  TEAM_LEAD: 'team_lead',
-  EXECUTIVE: 'executive',
-  EMPLOYEE: 'employee',
+  SUPERADMIN: 'SUPERADMIN',
+  ADMIN: 'ADMIN',
+  MEMBER: 'MEMBER',
+
+  // Legacy aliases → canonical values
+  SUPER_ADMIN: 'SUPERADMIN',
+  DEPT_HEAD: 'ADMIN',
+  TEAM_LEAD: 'ADMIN',
+  EXECUTIVE: 'MEMBER',
+  EMPLOYEE: 'MEMBER',
 });
 
-const ROLE_VALUES = Object.values(ROLES);
+const ROLE_VALUES = Object.freeze([ROLES.SUPERADMIN, ROLES.ADMIN, ROLES.MEMBER]);
 
 const ROLE_LABELS = Object.freeze({
-  [ROLES.SUPER_ADMIN]: 'Super Admin',
-  [ROLES.DEPT_HEAD]: 'Department Head',
-  [ROLES.TEAM_LEAD]: 'Team Lead',
-  [ROLES.EXECUTIVE]: 'Executive',
-  [ROLES.EMPLOYEE]: 'Employee',
+  [ROLES.SUPERADMIN]: 'Superadmin',
+  [ROLES.ADMIN]: 'Admin',
+  [ROLES.MEMBER]: 'Member',
 });
 
-/** Rank for approval / permission comparisons (higher = more authority) */
 const ROLE_RANK = Object.freeze({
-  [ROLES.EMPLOYEE]: 1,
-  [ROLES.EXECUTIVE]: 2,
-  [ROLES.TEAM_LEAD]: 3,
-  [ROLES.DEPT_HEAD]: 4,
-  [ROLES.SUPER_ADMIN]: 5,
+  [ROLES.MEMBER]: 1,
+  [ROLES.ADMIN]: 2,
+  [ROLES.SUPERADMIN]: 3,
 });
+
+/** Map any historical role string → SUPERADMIN | ADMIN | MEMBER */
+function normalizeRole(role) {
+  const raw = String(role || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, '_');
+
+  const map = {
+    SUPERADMIN: ROLES.SUPERADMIN,
+    SUPER_ADMIN: ROLES.SUPERADMIN,
+    SA: ROLES.SUPERADMIN,
+
+    ADMIN: ROLES.ADMIN,
+    DEPT_HEAD: ROLES.ADMIN,
+    DEPARTMENT_HEAD: ROLES.ADMIN,
+    TEAM_LEAD: ROLES.ADMIN,
+    TEAMLEAD: ROLES.ADMIN,
+    MANAGER: ROLES.ADMIN,
+    LEAD: ROLES.ADMIN,
+
+    MEMBER: ROLES.MEMBER,
+    EMPLOYEE: ROLES.MEMBER,
+    EXECUTIVE: ROLES.MEMBER,
+    USER: ROLES.MEMBER,
+  };
+
+  if (map[raw]) return map[raw];
+
+  const lower = String(role || '')
+    .trim()
+    .toLowerCase();
+  const lowerMap = {
+    superadmin: ROLES.SUPERADMIN,
+    super_admin: ROLES.SUPERADMIN,
+    admin: ROLES.ADMIN,
+    dept_head: ROLES.ADMIN,
+    team_lead: ROLES.ADMIN,
+    manager: ROLES.ADMIN,
+    member: ROLES.MEMBER,
+    employee: ROLES.MEMBER,
+    executive: ROLES.MEMBER,
+    user: ROLES.MEMBER,
+  };
+  return lowerMap[lower] || ROLES.MEMBER;
+}
 
 const DEPARTMENT_CODES = Object.freeze({
   SEO: 'seo',
@@ -31,72 +82,61 @@ const DEPARTMENT_CODES = Object.freeze({
   DESIGNING: 'designing',
 });
 
-/** Built-in presets — new departments may use any unique lowercase code */
 const DEPARTMENT_CODE_VALUES = Object.values(DEPARTMENT_CODES);
 
 const DEPARTMENT_PRESETS = Object.freeze([
   {
     code: DEPARTMENT_CODES.SEO,
     name: 'SEO',
-    description: 'Search engine optimization — Head, Team Leads, Executives, Employees',
+    description: 'Search engine optimization',
   },
   {
     code: DEPARTMENT_CODES.DEVELOPMENT,
     name: 'Development',
-    description: 'Software development — Team Leads and Employees',
+    description: 'Software development',
   },
   {
     code: DEPARTMENT_CODES.DESIGNING,
     name: 'UI/UX Designing',
-    description: 'Product design — Team Leads and Employees',
+    description: 'Product design',
   },
 ]);
 
-/**
- * Roles allowed per department (invite matrix).
- * SEO: Head + TL + Executive + Employee
- * Development / UI-UX: Team Lead + Employee only
- */
+/** Any of the three roles may be invited into any department */
 const DEPARTMENT_ALLOWED_ROLES = Object.freeze({
-  [DEPARTMENT_CODES.SEO]: [
-    ROLES.DEPT_HEAD,
-    ROLES.TEAM_LEAD,
-    ROLES.EXECUTIVE,
-    ROLES.EMPLOYEE,
-  ],
-  [DEPARTMENT_CODES.DEVELOPMENT]: [ROLES.TEAM_LEAD, ROLES.EMPLOYEE],
-  [DEPARTMENT_CODES.DESIGNING]: [ROLES.TEAM_LEAD, ROLES.EMPLOYEE],
+  [DEPARTMENT_CODES.SEO]: [ROLES.SUPERADMIN, ROLES.ADMIN, ROLES.MEMBER],
+  [DEPARTMENT_CODES.DEVELOPMENT]: [ROLES.SUPERADMIN, ROLES.ADMIN, ROLES.MEMBER],
+  [DEPARTMENT_CODES.DESIGNING]: [ROLES.SUPERADMIN, ROLES.ADMIN, ROLES.MEMBER],
 });
 
-/** Invite-facing role labels (dept-aware) */
 const INVITE_ROLE_LABELS = Object.freeze({
   [DEPARTMENT_CODES.SEO]: {
-    [ROLES.DEPT_HEAD]: 'SEO Head',
-    [ROLES.TEAM_LEAD]: 'Team Lead',
-    [ROLES.EXECUTIVE]: 'Executive',
-    [ROLES.EMPLOYEE]: 'Employee',
+    [ROLES.SUPERADMIN]: 'Superadmin',
+    [ROLES.ADMIN]: 'Admin',
+    [ROLES.MEMBER]: 'Member',
   },
   [DEPARTMENT_CODES.DEVELOPMENT]: {
-    [ROLES.TEAM_LEAD]: 'Team Lead',
-    [ROLES.EMPLOYEE]: 'Employee',
+    [ROLES.SUPERADMIN]: 'Superadmin',
+    [ROLES.ADMIN]: 'Admin',
+    [ROLES.MEMBER]: 'Member',
   },
   [DEPARTMENT_CODES.DESIGNING]: {
-    [ROLES.TEAM_LEAD]: 'Team Lead',
-    [ROLES.EMPLOYEE]: 'Employee',
+    [ROLES.SUPERADMIN]: 'Superadmin',
+    [ROLES.ADMIN]: 'Admin',
+    [ROLES.MEMBER]: 'Member',
   },
 });
 
-/** Suggested job titles by department + role */
 const JOB_TITLE_SUGGESTIONS = Object.freeze({
   [DEPARTMENT_CODES.SEO]: {
-    [ROLES.DEPT_HEAD]: ['SEO Head', 'Head of SEO'],
-    [ROLES.TEAM_LEAD]: ['SEO Team Lead', 'SEO Lead'],
-    [ROLES.EXECUTIVE]: ['SEO Executive', 'SEO Specialist'],
-    [ROLES.EMPLOYEE]: ['SEO Analyst', 'SEO Associate', 'Content SEO'],
+    [ROLES.SUPERADMIN]: ['Superadmin'],
+    [ROLES.ADMIN]: ['SEO Admin', 'SEO Manager'],
+    [ROLES.MEMBER]: ['SEO Analyst', 'SEO Associate', 'Content SEO'],
   },
   [DEPARTMENT_CODES.DEVELOPMENT]: {
-    [ROLES.TEAM_LEAD]: ['Development Team Lead', 'Engineering Lead', 'Tech Lead'],
-    [ROLES.EMPLOYEE]: [
+    [ROLES.SUPERADMIN]: ['Superadmin'],
+    [ROLES.ADMIN]: ['Engineering Admin', 'Tech Admin'],
+    [ROLES.MEMBER]: [
       'Software Developer',
       'Frontend Developer',
       'Backend Developer',
@@ -104,28 +144,25 @@ const JOB_TITLE_SUGGESTIONS = Object.freeze({
     ],
   },
   [DEPARTMENT_CODES.DESIGNING]: {
-    [ROLES.TEAM_LEAD]: ['UI/UX Team Lead', 'Design Lead'],
-    [ROLES.EMPLOYEE]: ['UI/UX Designer', 'Product Designer', 'Visual Designer'],
+    [ROLES.SUPERADMIN]: ['Superadmin'],
+    [ROLES.ADMIN]: ['Design Admin'],
+    [ROLES.MEMBER]: ['UI/UX Designer', 'Product Designer', 'Visual Designer'],
   },
 });
 
 function canManageOrg(role) {
-  return role === ROLES.SUPER_ADMIN;
+  return normalizeRole(role) === ROLES.SUPERADMIN;
 }
 
 function canApproveTasks(role) {
-  return (
-    role === ROLES.SUPER_ADMIN ||
-    role === ROLES.DEPT_HEAD ||
-    role === ROLES.TEAM_LEAD
-  );
+  const r = normalizeRole(role);
+  return r === ROLES.SUPERADMIN || r === ROLES.ADMIN;
 }
 
 function isLeadOrAbove(role) {
-  return (ROLE_RANK[role] || 0) >= ROLE_RANK[ROLES.TEAM_LEAD];
+  return (ROLE_RANK[normalizeRole(role)] || 0) >= ROLE_RANK[ROLES.ADMIN];
 }
 
-/** Normalize custom department codes for scalability */
 function normalizeDepartmentCode(code) {
   return String(code || '')
     .trim()
@@ -138,31 +175,26 @@ function getAllowedRolesForDepartment(deptCode) {
   const code = normalizeDepartmentCode(deptCode);
   return DEPARTMENT_ALLOWED_ROLES[code]
     ? [...DEPARTMENT_ALLOWED_ROLES[code]]
-    : [ROLES.TEAM_LEAD, ROLES.EMPLOYEE];
+    : [ROLES.ADMIN, ROLES.MEMBER];
 }
 
 function isRoleAllowedForDepartment(deptCode, role) {
   if (!deptCode) return true;
   const code = normalizeDepartmentCode(deptCode);
-  // Custom / unknown departments accept any non-system role
   if (!DEPARTMENT_ALLOWED_ROLES[code]) return true;
-  return DEPARTMENT_ALLOWED_ROLES[code].includes(role);
+  return DEPARTMENT_ALLOWED_ROLES[code].includes(normalizeRole(role));
 }
 
 function getInviteRoleLabel(deptCode, role) {
   const code = normalizeDepartmentCode(deptCode);
-  return (
-    INVITE_ROLE_LABELS[code]?.[role] ||
-    ROLE_LABELS[role] ||
-    String(role || '').replace(/_/g, ' ')
-  );
+  const r = normalizeRole(role);
+  return INVITE_ROLE_LABELS[code]?.[r] || ROLE_LABELS[r] || String(role || '').replace(/_/g, ' ');
 }
 
 function getJobTitleSuggestions(deptCode, role) {
   const code = normalizeDepartmentCode(deptCode);
-  return JOB_TITLE_SUGGESTIONS[code]?.[role]
-    ? [...JOB_TITLE_SUGGESTIONS[code][role]]
-    : [];
+  const r = normalizeRole(role);
+  return JOB_TITLE_SUGGESTIONS[code]?.[r] ? [...JOB_TITLE_SUGGESTIONS[code][r]] : [];
 }
 
 function getDefaultJobTitle(deptCode, role) {
@@ -181,6 +213,7 @@ module.exports = {
   DEPARTMENT_ALLOWED_ROLES,
   INVITE_ROLE_LABELS,
   JOB_TITLE_SUGGESTIONS,
+  normalizeRole,
   canManageOrg,
   canApproveTasks,
   isLeadOrAbove,

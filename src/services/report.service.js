@@ -363,7 +363,8 @@ class ReportService {
       query.from,
       query.to
     );
-    const isSuperAdmin = ctx.role === ROLES.SUPER_ADMIN;
+    const isSuperAdmin = ctx.role === ROLES.SUPERADMIN || ctx.role === ROLES.SUPER_ADMIN;
+    const isAdmin = ctx.role === ROLES.ADMIN;
     const now = new Date();
 
     const projectFilter = await policy.projectListFilter(ctx);
@@ -372,10 +373,10 @@ class ReportService {
       .populate('team', 'name department')
       .lean();
 
-    if (query.projectId && isSuperAdmin) {
+    if (query.projectId && (isSuperAdmin || isAdmin)) {
       visibleProjects = visibleProjects.filter((p) => String(p._id) === String(query.projectId));
     }
-    if (query.teamId && isSuperAdmin) {
+    if (query.teamId && (isSuperAdmin || isAdmin)) {
       visibleProjects = visibleProjects.filter(
         (p) => String(p.team?._id || p.team) === String(query.teamId)
       );
@@ -392,26 +393,13 @@ class ReportService {
       project: { $in: projectIds.length ? projectIds : [] },
     };
 
+    // SUPERADMIN / ADMIN → member progress; MEMBER → own report only
     const userFilter = { isActive: true };
-    if (!isSuperAdmin) {
-      if (ctx.role === ROLES.DEPT_HEAD && (ctx.headedDepartmentIds || []).length) {
-        userFilter.department = { $in: ctx.headedDepartmentIds };
-      } else if (ctx.role === ROLES.TEAM_LEAD && (ctx.ledTeamIds || []).length) {
-        const led = await Team.find({ _id: { $in: ctx.ledTeamIds } })
-          .select('lead members')
-          .lean();
-        const ids = new Set([String(ctx.id)]);
-        for (const t of led) {
-          if (t.lead) ids.add(String(t.lead));
-          for (const m of t.members || []) ids.add(String(m));
-        }
-        userFilter._id = { $in: [...ids] };
-      } else {
-        userFilter._id = ctx.id;
-      }
-    } else if (query.userId) {
+    if (!isSuperAdmin && !isAdmin) {
+      userFilter._id = ctx.id;
+    } else if (isSuperAdmin && query.userId) {
       userFilter._id = query.userId;
-    } else if (query.departmentId) {
+    } else if (isSuperAdmin && query.departmentId) {
       userFilter.department = query.departmentId;
     }
 

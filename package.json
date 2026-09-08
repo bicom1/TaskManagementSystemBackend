@@ -11,6 +11,7 @@
     "format": "prettier --write \"src/**/*.js\"",
     "seed": "node src/scripts/seed.js",
     "seed:super-admin": "node src/scripts/ensure-super-admin.js",
+    "migrate:roles": "node src/scripts/migrate-roles.js",
     "seed:key-accounts": "node src/scripts/ensure-key-accounts.js",
     "smoke:auth-ai": "node src/scripts/smoke-auth-ai.js",
     "smoke:collection-fixes": "node src/scripts/smoke-collection-fixes.js",

@@ -1,5 +1,11 @@
 /**
- * Upsert a Super Admin without wiping the database.
+ * Upsert Superadmin without wiping the database.
+ * Credentials come from env only — never hardcode production passwords in source.
+ *
+ *   SEED_SUPER_ADMIN_EMAIL
+ *   SEED_SUPER_ADMIN_PASSWORD
+ *   SEED_SUPER_ADMIN_NAME
+ *
  * Usage: node src/scripts/ensure-super-admin.js
  */
 require('dotenv').config();
@@ -7,13 +13,24 @@ const mongoose = require('mongoose');
 const User = require('../models/user.model');
 const { ROLES } = require('../constants/roles.constant');
 
-const EMAIL = (process.env.SEED_SUPER_ADMIN_EMAIL || 'ibrahim@bicommunications.ae')
+const EMAIL = (
+  process.env.SEED_SUPER_ADMIN_EMAIL ||
+  process.env.SUPERADMIN_EMAIL ||
+  'hamzaumar2033@gmail.com'
+)
   .toLowerCase()
   .trim();
-const PASSWORD = process.env.SEED_SUPER_ADMIN_PASSWORD || 'Ibrahim@Admin123';
-const NAME = process.env.SEED_SUPER_ADMIN_NAME || 'Ibrahim';
+const PASSWORD = process.env.SEED_SUPER_ADMIN_PASSWORD || process.env.SUPERADMIN_PASSWORD;
+const NAME = process.env.SEED_SUPER_ADMIN_NAME || process.env.SUPERADMIN_NAME || 'Hamza Umar';
 
 async function main() {
+  if (!PASSWORD || String(PASSWORD).length < 8) {
+    console.error(
+      'Set SEED_SUPER_ADMIN_PASSWORD (or SUPERADMIN_PASSWORD) in backend/.env — min 8 chars.'
+    );
+    process.exit(1);
+  }
+
   const uri = process.env.MONGO_URI;
   if (!uri || uri.includes('<db_password>')) {
     console.error('Set a real MONGO_URI in backend/.env before running.');
@@ -21,7 +38,7 @@ async function main() {
   }
 
   await mongoose.connect(uri);
-  console.log('Connected. Ensuring Super Admin…');
+  console.log('Connected. Ensuring Superadmin…');
 
   let user = await User.findOne({
     email: new RegExp(`^${EMAIL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
@@ -29,27 +46,27 @@ async function main() {
 
   if (user) {
     user.name = NAME;
-    user.role = ROLES.SUPER_ADMIN;
-    user.jobTitle = 'Super Admin';
+    user.role = ROLES.SUPERADMIN;
+    user.jobTitle = 'Superadmin';
     user.password = PASSWORD;
     user.markModified('password');
     user.isActive = true;
     user.invitePending = false;
-    user.authProvider = 'local';
+    if (!user.authProvider) user.authProvider = 'local';
     await user.save();
-    console.log(`Updated existing Super Admin: ${EMAIL}`);
+    console.log(`Updated existing Superadmin: ${EMAIL}`);
   } else {
     user = await User.create({
       name: NAME,
       email: EMAIL,
       password: PASSWORD,
-      role: ROLES.SUPER_ADMIN,
-      jobTitle: 'Super Admin',
+      role: ROLES.SUPERADMIN,
+      jobTitle: 'Superadmin',
       authProvider: 'local',
       isActive: true,
       invitePending: false,
     });
-    console.log(`Created Super Admin: ${EMAIL}`);
+    console.log(`Created Superadmin: ${EMAIL}`);
   }
 
   const fresh = await User.findById(user._id).select('+password');

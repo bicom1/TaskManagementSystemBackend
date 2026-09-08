@@ -158,7 +158,7 @@ function assert(cond, msg) {
   const invite = await request(
     'POST',
     '/api/v1/users/invite',
-    { email: inviteEmail, name: 'Invite Smoke', role: 'employee', department: dept.body.data?._id },
+    { email: inviteEmail, name: 'Invite Smoke', role: 'MEMBER', department: dept.body.data?._id },
     access
   );
   assert([200, 201].includes(invite.status), `invite ${invite.status} ${JSON.stringify(invite.body)}`);

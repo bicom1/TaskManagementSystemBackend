@@ -39,10 +39,14 @@ const userSchema = new mongoose.Schema(
       enum: ['local', 'google'],
       default: 'local',
     },
-    role: {
+      role: {
       type: String,
       enum: ROLE_VALUES,
-      default: ROLES.EMPLOYEE,
+      default: ROLES.MEMBER,
+      set: (v) => {
+        const { normalizeRole } = require('../constants/roles.constant');
+        return normalizeRole(v);
+      },
     },
     jobTitle: {
       type: String,

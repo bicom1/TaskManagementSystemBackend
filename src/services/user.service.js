@@ -15,6 +15,7 @@ const {
   getDefaultJobTitle,
   getInviteRoleLabel,
   normalizeDepartmentCode,
+  normalizeRole,
 } = require('../constants/roles.constant');
 const { PERMISSIONS, getInvitableRoles } = require('../constants/permissions.constant');
 const { NOTIFICATION_TYPES } = require('../constants/notification.constant');
@@ -216,7 +217,7 @@ class UserService {
     const {
       email,
       name,
-      role = ROLES.EMPLOYEE,
+      role: rawRole = ROLES.MEMBER,
       jobTitle,
       department,
       departmentName,
@@ -225,6 +226,8 @@ class UserService {
       teamLead,
       setAsTeamLead = false,
     } = payload;
+
+    const role = normalizeRole(rawRole);
 
     const normalizedEmail = email.trim().toLowerCase();
     const existingUser = await userRepository.findByEmailInsensitiveWithInvite(normalizedEmail, {

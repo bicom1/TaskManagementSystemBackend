@@ -3,7 +3,7 @@ const Project = require('../models/project.model');
 const User = require('../models/user.model');
 const Department = require('../models/department.model');
 const ApiError = require('../utils/ApiError.util');
-const { ROLES, ROLE_RANK } = require('../constants/roles.constant');
+const { ROLES, ROLE_RANK, normalizeRole } = require('../constants/roles.constant');
 const {
   PERMISSIONS,
   ACCESS,
@@ -25,6 +25,7 @@ async function buildActorContext(userId) {
     throw ApiError.unauthorized('User account is inactive or not found');
   }
 
+  const role = normalizeRole(user.role);
   const departmentId = user.department ? String(user.department) : null;
 
   const ledTeams = await Team.find({ lead: userId, isActive: true })
@@ -47,18 +48,18 @@ async function buildActorContext(userId) {
     ),
   ];
 
-  // Dept head may also be listed as department.head
+  // Admin / Superadmin may head departments
   let headedDepartmentIds = [];
-  if (user.role === ROLES.DEPT_HEAD || user.role === ROLES.SUPER_ADMIN) {
+  if (role === ROLES.ADMIN || role === ROLES.SUPERADMIN) {
     const headed = await Department.find({
       isActive: true,
-      ...(user.role === ROLES.SUPER_ADMIN ? {} : { $or: [{ head: userId }, { _id: departmentId }] }),
+      ...(role === ROLES.SUPERADMIN ? {} : { $or: [{ head: userId }, { _id: departmentId }] }),
     })
       .select('_id')
       .lean();
     headedDepartmentIds = headed.map((d) => String(d._id));
   }
-  if (departmentId && user.role === ROLES.DEPT_HEAD && !headedDepartmentIds.includes(departmentId)) {
+  if (departmentId && role === ROLES.ADMIN && !headedDepartmentIds.includes(departmentId)) {
     headedDepartmentIds.push(departmentId);
   }
 
@@ -76,14 +77,14 @@ async function buildActorContext(userId) {
 
   return {
     id: String(user._id),
-    role: user.role,
+    role,
     departmentId,
     headedDepartmentIds,
     ledTeamIds,
     teamIds,
     teamDepartmentIds,
     projectIds,
-    permissions: getPermissionsForRole(user.role),
+    permissions: getPermissionsForRole(role),
   };
 }
 

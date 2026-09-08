@@ -1,6 +1,5 @@
 /**
- * Central permission catalog.
- * New departments/roles can extend ROLE_PERMISSIONS without rewriting services.
+ * Central permission catalog — SUPERADMIN | ADMIN | MEMBER.
  */
 const PERMISSIONS = Object.freeze({
   USER_MANAGE: 'USER_MANAGE',
@@ -15,35 +14,32 @@ const PERMISSIONS = Object.freeze({
   TEAM_VIEW: 'TEAM_VIEW',
   PROJECT_CREATE: 'PROJECT_CREATE',
   PROJECT_EDIT: 'PROJECT_EDIT',
+  PROJECT_DELETE: 'PROJECT_DELETE',
   PROJECT_VIEW: 'PROJECT_VIEW',
   REPORT_VIEW: 'REPORT_VIEW',
   DEPARTMENT_MANAGE: 'DEPARTMENT_MANAGE',
   DEPARTMENT_VIEW: 'DEPARTMENT_VIEW',
   AUDIT_VIEW: 'AUDIT_VIEW',
+  AI_USE: 'AI_USE',
 });
 
 const PERMISSION_VALUES = Object.values(PERMISSIONS);
 
-/** Access modes for scoped resources */
 const ACCESS = Object.freeze({
   NONE: 'none',
   VIEW: 'view',
   MANAGE: 'manage',
 });
 
-const { ROLES } = require('./roles.constant');
+const { ROLES, normalizeRole } = require('./roles.constant');
 
-/**
- * Base permissions granted by role (org-wide capability flags).
- * Scope (dept/team) is enforced separately in the policy engine.
- */
 const ROLE_PERMISSIONS = Object.freeze({
-  [ROLES.SUPER_ADMIN]: PERMISSION_VALUES,
+  [ROLES.SUPERADMIN]: PERMISSION_VALUES,
 
-  [ROLES.DEPT_HEAD]: [
+  [ROLES.ADMIN]: [
     PERMISSIONS.USER_INVITE,
     PERMISSIONS.USER_VIEW,
-    PERMISSIONS.USER_MANAGE, // scoped to own department
+    PERMISSIONS.USER_MANAGE,
     PERMISSIONS.TASK_CREATE,
     PERMISSIONS.TASK_ASSIGN,
     PERMISSIONS.TASK_EDIT,
@@ -54,28 +50,13 @@ const ROLE_PERMISSIONS = Object.freeze({
     PERMISSIONS.PROJECT_CREATE,
     PERMISSIONS.PROJECT_EDIT,
     PERMISSIONS.PROJECT_VIEW,
+    // intentionally NO PROJECT_DELETE
     PERMISSIONS.REPORT_VIEW,
     PERMISSIONS.DEPARTMENT_VIEW,
+    PERMISSIONS.AI_USE,
   ],
 
-  [ROLES.TEAM_LEAD]: [
-    PERMISSIONS.USER_INVITE,
-    PERMISSIONS.USER_VIEW,
-    PERMISSIONS.TASK_CREATE,
-    PERMISSIONS.TASK_ASSIGN,
-    PERMISSIONS.TASK_EDIT,
-    PERMISSIONS.TASK_DELETE,
-    PERMISSIONS.TASK_APPROVE,
-    PERMISSIONS.TEAM_MANAGE, // scoped to led teams
-    PERMISSIONS.TEAM_VIEW,
-    PERMISSIONS.PROJECT_CREATE,
-    PERMISSIONS.PROJECT_EDIT,
-    PERMISSIONS.PROJECT_VIEW,
-    PERMISSIONS.REPORT_VIEW,
-    PERMISSIONS.DEPARTMENT_VIEW,
-  ],
-
-  [ROLES.EXECUTIVE]: [
+  [ROLES.MEMBER]: [
     PERMISSIONS.USER_VIEW,
     PERMISSIONS.TASK_CREATE,
     PERMISSIONS.TASK_ASSIGN,
@@ -84,44 +65,30 @@ const ROLE_PERMISSIONS = Object.freeze({
     PERMISSIONS.PROJECT_CREATE,
     PERMISSIONS.PROJECT_EDIT,
     PERMISSIONS.PROJECT_VIEW,
+    // intentionally NO PROJECT_DELETE
     PERMISSIONS.REPORT_VIEW,
     PERMISSIONS.DEPARTMENT_VIEW,
-  ],
-
-  [ROLES.EMPLOYEE]: [
-    PERMISSIONS.USER_VIEW,
-    PERMISSIONS.TASK_CREATE,
-    PERMISSIONS.TASK_ASSIGN,
-    PERMISSIONS.TASK_EDIT,
-    PERMISSIONS.TEAM_VIEW,
-    PERMISSIONS.PROJECT_CREATE,
-    PERMISSIONS.PROJECT_EDIT,
-    PERMISSIONS.PROJECT_VIEW,
-    PERMISSIONS.REPORT_VIEW,
-    PERMISSIONS.DEPARTMENT_VIEW,
+    PERMISSIONS.AI_USE,
   ],
 });
 
-/** Roles each inviter may assign (cannot invite equal/higher rank except SA) */
 const INVITABLE_ROLES_BY_ACTOR = Object.freeze({
-  [ROLES.SUPER_ADMIN]: [ROLES.SUPER_ADMIN, ROLES.DEPT_HEAD, ROLES.TEAM_LEAD, ROLES.EXECUTIVE, ROLES.EMPLOYEE],
-  [ROLES.DEPT_HEAD]: [ROLES.TEAM_LEAD, ROLES.EXECUTIVE, ROLES.EMPLOYEE],
-  [ROLES.TEAM_LEAD]: [ROLES.EXECUTIVE, ROLES.EMPLOYEE],
-  [ROLES.EXECUTIVE]: [],
-  [ROLES.EMPLOYEE]: [],
+  [ROLES.SUPERADMIN]: [ROLES.SUPERADMIN, ROLES.ADMIN, ROLES.MEMBER],
+  [ROLES.ADMIN]: [ROLES.MEMBER],
+  [ROLES.MEMBER]: [],
 });
 
 function roleHasPermission(role, permission) {
-  const list = ROLE_PERMISSIONS[role] || [];
+  const list = ROLE_PERMISSIONS[normalizeRole(role)] || [];
   return list.includes(permission);
 }
 
 function getPermissionsForRole(role) {
-  return [...(ROLE_PERMISSIONS[role] || [])];
+  return [...(ROLE_PERMISSIONS[normalizeRole(role)] || [])];
 }
 
 function getInvitableRoles(actorRole) {
-  return [...(INVITABLE_ROLES_BY_ACTOR[actorRole] || [])];
+  return [...(INVITABLE_ROLES_BY_ACTOR[normalizeRole(actorRole)] || [])];
 }
 
 module.exports = {

@@ -401,13 +401,14 @@ class UserService {
           name: displayName,
           email: normalizedEmail,
           authProvider: 'google',
-          role: role || ROLES.EMPLOYEE,
+          role: role || ROLES.MEMBER,
           jobTitle: resolvedJobTitle || null,
           department: resolvedDepartment,
           invitePending: true,
           invitedBy: actor.id,
           inviteToken: inviteHashed,
           inviteTokenExpires: inviteExpires,
+          isActive: true,
         });
       } catch (createErr) {
         // Race or duplicate from a prior failed live invite — load and re-send

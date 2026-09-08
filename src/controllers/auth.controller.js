@@ -48,21 +48,25 @@ function resolveOAuthClientUrl(storedUrl) {
 }
 
 function resolveGoogleErrorCode(err) {
+  const msg = String(err?.message || '');
   if (err?.statusCode === 403) {
-    const msg = String(err.message || '');
     if (msg.includes('expired')) return 'invite_expired';
     if (msg.startsWith('wrong_google_email') || msg.includes('wrong_google_email')) {
       return msg.startsWith('wrong_google_email') ? msg : `wrong_google_email: ${msg}`;
     }
     return 'not_invited';
   }
-  return err?.message || 'google_failed';
+  if (err?.statusCode === 409) {
+    return msg || 'google_account_in_use';
+  }
+  return msg || 'google_failed';
 }
 
 function sanitizeInviteToken(raw) {
   const token = String(raw || '').trim();
-  if (token.length < 16 || token.length > 200) return null;
-  if (!/^[a-fA-F0-9]+$/.test(token)) return null;
+  // Invite tokens are 64-char hex, but allow a wider safe range for query/cookie transport
+  if (token.length < 16 || token.length > 256) return null;
+  if (!/^[A-Za-z0-9_-]+$/.test(token)) return null;
   return token;
 }
 

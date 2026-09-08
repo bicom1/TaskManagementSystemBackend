@@ -78,7 +78,29 @@ class UserRepository {
   }
 
   async updateById(id, updates) {
-    return User.findByIdAndUpdate(id, updates, {
+    const payload = { ...updates };
+    const unset = { ...(payload.$unset || {}) };
+    delete payload.$unset;
+
+    if (Object.prototype.hasOwnProperty.call(updates, 'password') && updates.password == null) {
+      delete payload.password;
+      unset.password = 1;
+    }
+
+    const hasUnset = Object.keys(unset).length > 0;
+    const hasSet = Object.keys(payload).length > 0;
+
+    if (hasUnset) {
+      const ops = {};
+      if (hasSet) ops.$set = payload;
+      ops.$unset = unset;
+      return User.findByIdAndUpdate(id, ops, {
+        new: true,
+        runValidators: true,
+      }).exec();
+    }
+
+    return User.findByIdAndUpdate(id, payload, {
       new: true,
       runValidators: true,
     }).exec();

@@ -44,17 +44,22 @@ class AuthService {
     );
   }
 
-  getGoogleAuthUrl(state) {
+  getGoogleAuthUrl(state, { loginHint } = {}) {
     const redirectUri = this.getGoogleRedirectUri();
     logger.info(`Google OAuth redirect_uri=${redirectUri}`);
     const client = this.#getGoogleClient(redirectUri);
-    return client.generateAuthUrl({
+    const opts = {
       access_type: 'offline',
       prompt: 'select_account',
       scope: ['openid', 'email', 'profile'],
       state,
       redirect_uri: redirectUri,
-    });
+    };
+    const hint = String(loginHint || '')
+      .trim()
+      .toLowerCase();
+    if (hint) opts.login_hint = hint;
+    return client.generateAuthUrl(opts);
   }
 
   async register({ name, email, password }) {
@@ -255,7 +260,7 @@ class AuthService {
     return this.#loginWithGoogleProfile(payload);
   }
 
-  async googleAuthWithCode(code) {
+  async googleAuthWithCode(code, { expectedEmail, inviteToken } = {}) {
     const redirectUri = this.getGoogleRedirectUri();
     const client = this.#getGoogleClient(redirectUri);
     let tokens;
@@ -282,7 +287,18 @@ class AuthService {
       throw ApiError.unauthorized('Invalid Google ID token');
     }
 
-    return this.#loginWithGoogleProfile(ticket.getPayload());
+    let expected = expectedEmail;
+    if (inviteToken) {
+      const invite = await this.resolveInviteByToken(inviteToken);
+      if (!invite) {
+        throw ApiError.forbidden(
+          'Your invitation has expired. Ask your admin to send a new invite.'
+        );
+      }
+      expected = invite.email;
+    }
+
+    return this.#loginWithGoogleProfile(ticket.getPayload(), { expectedEmail: expected });
   }
 
   #assertGoogleInviteValid(user) {
@@ -325,17 +341,25 @@ class AuthService {
   async #linkGoogleAndAcceptInvite(user, { googleId, email, name, avatarUrl }) {
     this.#assertGoogleInviteValid(user);
 
+    const invitedEmail = String(user.email || '')
+      .trim()
+      .toLowerCase();
+    if (invitedEmail && invitedEmail !== email) {
+      throw ApiError.forbidden(
+        `wrong_google_email: Sign in with Google using ${invitedEmail} — the same email you were invited with.`
+      );
+    }
+
     const updates = {
       googleId,
       invitePending: false,
       inviteToken: null,
       inviteTokenExpires: null,
       authProvider: 'google',
-      password: null,
+      $unset: { password: 1 },
     };
     if (avatarUrl) updates.avatarUrl = avatarUrl;
     if (name && name !== user.name) updates.name = name;
-    if (user.email !== email) updates.email = email;
 
     try {
       return await userRepository.updateById(user._id, updates);
@@ -351,7 +375,7 @@ class AuthService {
           inviteToken: null,
           inviteTokenExpires: null,
           authProvider: 'google',
-          password: null,
+          $unset: { password: 1 },
           ...(avatarUrl ? { avatarUrl } : {}),
         });
       }
@@ -359,7 +383,7 @@ class AuthService {
     }
   }
 
-  async #loginWithGoogleProfile(payload) {
+  async #loginWithGoogleProfile(payload, { expectedEmail } = {}) {
     if (!payload?.email || !payload?.sub) {
       throw ApiError.unauthorized('Google account is missing required profile data');
     }
@@ -371,6 +395,16 @@ class AuthService {
     const email = payload.email.toLowerCase().trim();
     const googleId = String(payload.sub);
     const name = payload.name || email.split('@')[0];
+
+    const expected = String(expectedEmail || '')
+      .trim()
+      .toLowerCase();
+    if (expected && expected !== email) {
+      throw ApiError.forbidden(
+        `wrong_google_email: Sign in with Google using ${expected} — the same email you were invited with.`
+      );
+    }
+
     // Prefer higher-res Google profile photo when available
     let avatarUrl = payload.picture || null;
     if (avatarUrl && typeof avatarUrl === 'string') {
@@ -390,6 +424,21 @@ class AuthService {
       if (name && name !== user.name) refresh.name = name;
       if (Object.keys(refresh).length) {
         user = await userRepository.updateById(user._id, refresh);
+      }
+      // Invited account must finish with the invited email
+      if (user?.invitePending) {
+        this.#assertGoogleInviteValid(user);
+        if (String(user.email || '').toLowerCase() !== email) {
+          throw ApiError.forbidden(
+            `wrong_google_email: Sign in with Google using ${user.email} — the same email you were invited with.`
+          );
+        }
+        user = await this.#linkGoogleAndAcceptInvite(user, {
+          googleId,
+          email,
+          name,
+          avatarUrl,
+        });
       }
     }
 
@@ -441,17 +490,29 @@ class AuthService {
           if (user) {
             if (user.invitePending) {
               this.#assertGoogleInviteValid(user);
+              user = await this.#linkGoogleAndAcceptInvite(user, {
+                googleId,
+                email,
+                name,
+                avatarUrl,
+              });
+            } else {
+              const recover = {
+                invitePending: false,
+                inviteToken: null,
+                inviteTokenExpires: null,
+                authProvider: 'google',
+              };
+              if (!user.googleId) recover.googleId = googleId;
+              if (avatarUrl) recover.avatarUrl = avatarUrl;
+              user = await userRepository.updateById(user._id, recover);
             }
-            const recover = { invitePending: false, inviteToken: null, inviteTokenExpires: null };
-            if (!user.googleId) recover.googleId = googleId;
-            if (avatarUrl) recover.avatarUrl = avatarUrl;
-            user = await userRepository.updateById(user._id, recover);
           }
         }
         if (!user) {
           logger.error('Google sign-in failed after duplicate key', err);
           throw ApiError.badRequest(
-            'Could not complete Google sign-in. Try email login or contact support.'
+            'Could not complete Google sign-in. Use Continue with Google on your invite link.'
           );
         }
       }
@@ -468,6 +529,7 @@ class AuthService {
         invitePending: false,
         inviteToken: null,
         inviteTokenExpires: null,
+        authProvider: 'google',
       });
       user.invitePending = false;
     }
@@ -506,10 +568,12 @@ class AuthService {
     await userRepository.incrementTokenVersion(userId);
   }
 
-  createOAuthState(clientUrl) {
+  createOAuthState(clientUrl, { loginHint, inviteToken } = {}) {
     const data = {
       n: crypto.randomBytes(16).toString('hex'),
       c: clientUrl || null,
+      h: loginHint ? String(loginHint).trim().toLowerCase() : null,
+      i: inviteToken ? String(inviteToken).trim() : null,
       t: Date.now(),
     };
     const payload = JSON.stringify(data);
@@ -524,10 +588,37 @@ class AuthService {
       if (s !== expected) return null;
       const data = JSON.parse(p);
       if (Date.now() - data.t > 15 * 60 * 1000) return null;
-      return { nonce: data.n, clientUrl: data.c };
+      return {
+        nonce: data.n,
+        clientUrl: data.c,
+        loginHint: data.h || null,
+        inviteToken: data.i || null,
+      };
     } catch {
       return null;
     }
+  }
+
+  /** Resolve invited email from raw invite token (for Google login_hint + email match). */
+  async resolveInviteByToken(rawToken) {
+    const token = String(rawToken || '').trim();
+    if (token.length < 16) return null;
+    const hashed = crypto.createHash('sha256').update(token).digest('hex');
+    const User = require('../models/user.model');
+    const user = await User.findOne({
+      inviteToken: hashed,
+      inviteTokenExpires: { $gt: new Date() },
+      invitePending: true,
+      isActive: { $ne: false },
+    })
+      .select('email name invitePending')
+      .lean();
+    if (!user?.email) return null;
+    return {
+      email: String(user.email).toLowerCase().trim(),
+      name: user.name || null,
+      inviteToken: token,
+    };
   }
 
   #issueTokens(user) {

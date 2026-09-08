@@ -11,6 +11,7 @@ const {
 const REFRESH_COOKIE_NAME = 'refreshToken';
 const GOOGLE_STATE_COOKIE = 'google_oauth_state';
 const GOOGLE_CLIENT_URL_COOKIE = 'google_oauth_client_url';
+const GOOGLE_INVITE_TOKEN_COOKIE = 'google_oauth_invite_token';
 
 // Cross-site (Vercel frontend → Render API) needs SameSite=None + Secure in production
 const isProd = env.NODE_ENV === 'production';
@@ -50,14 +51,50 @@ function resolveGoogleErrorCode(err) {
   if (err?.statusCode === 403) {
     const msg = String(err.message || '');
     if (msg.includes('expired')) return 'invite_expired';
+    if (msg.startsWith('wrong_google_email') || msg.includes('wrong_google_email')) {
+      return msg.startsWith('wrong_google_email') ? msg : `wrong_google_email: ${msg}`;
+    }
     return 'not_invited';
   }
   return err?.message || 'google_failed';
 }
 
-function loginRedirect(res, accessToken, errorCode, clientBase, user = null) {
+function sanitizeInviteToken(raw) {
+  const token = String(raw || '').trim();
+  if (token.length < 16 || token.length > 200) return null;
+  if (!/^[a-fA-F0-9]+$/.test(token)) return null;
+  return token;
+}
+
+function inviteAcceptPath(inviteToken, errorCode = null) {
+  const token = sanitizeInviteToken(inviteToken);
+  if (!token) return null;
+  const params = new URLSearchParams();
+  params.set('token', token);
+  if (errorCode) params.set('googleError', String(errorCode));
+  return `/accept-invite?${params.toString()}`;
+}
+
+function clearGoogleOAuthCookies(res) {
+  res.clearCookie(GOOGLE_STATE_COOKIE, { path: '/api/v1/auth' });
+  res.clearCookie(GOOGLE_CLIENT_URL_COOKIE, { path: '/api/v1/auth' });
+  res.clearCookie(GOOGLE_INVITE_TOKEN_COOKIE, { path: '/api/v1/auth' });
+}
+
+function loginRedirect(
+  res,
+  accessToken,
+  errorCode,
+  clientBase,
+  user = null,
+  inviteToken = null
+) {
   const base = resolveOAuthClientUrl(clientBase);
   if (errorCode) {
+    const invitePath = inviteAcceptPath(inviteToken, errorCode);
+    if (invitePath) {
+      return res.redirect(`${base}${invitePath}`);
+    }
     return res.redirect(`${base}/login?googleError=${encodeURIComponent(errorCode)}`);
   }
   const url = new URL(`${base}/auth/google/callback`);
@@ -176,9 +213,26 @@ async function googleExchange(req, res) {
 /** Redirect browser to Google consent screen */
 async function googleStart(req, res) {
   const clientUrl = resolveClientUrlFromRequest(req);
-  const state = authService.createOAuthState(clientUrl);
+  const inviteToken = sanitizeInviteToken(req.query.inviteToken || req.query.token);
+  let loginHint = String(req.query.loginHint || req.query.email || '')
+    .trim()
+    .toLowerCase();
 
-  // Cookie backup only — primary state is signed and returned by Google
+  // Prefer email from the invite record so Google + match checks stay correct
+  if (inviteToken) {
+    try {
+      const invite = await authService.resolveInviteByToken(inviteToken);
+      if (invite?.email) loginHint = invite.email;
+    } catch {
+      /* preview may fail; still start Google with provided hint */
+    }
+  }
+
+  const state = authService.createOAuthState(clientUrl, {
+    loginHint: loginHint || null,
+    inviteToken,
+  });
+
   res.cookie(GOOGLE_STATE_COOKIE, state, {
     ...oauthCookieOptions,
     maxAge: 10 * 60 * 1000,
@@ -187,40 +241,65 @@ async function googleStart(req, res) {
     ...oauthCookieOptions,
     maxAge: 10 * 60 * 1000,
   });
+  if (inviteToken) {
+    res.cookie(GOOGLE_INVITE_TOKEN_COOKIE, inviteToken, {
+      ...oauthCookieOptions,
+      maxAge: 10 * 60 * 1000,
+    });
+  }
 
-  const url = authService.getGoogleAuthUrl(state);
+  const url = authService.getGoogleAuthUrl(state, { loginHint });
   res.redirect(url);
 }
 
 /** Google redirects here with ?code= */
 async function googleCallback(req, res) {
+  const cookieInvite = sanitizeInviteToken(req.cookies?.[GOOGLE_INVITE_TOKEN_COOKIE]);
   try {
     const { code, state, error } = req.query;
 
     if (error) {
       const savedClientUrl = req.cookies[GOOGLE_CLIENT_URL_COOKIE];
-      res.clearCookie(GOOGLE_CLIENT_URL_COOKIE, { path: '/api/v1/auth' });
-      return loginRedirect(res, null, String(error), savedClientUrl);
+      let inviteToken = cookieInvite;
+      try {
+        const verified = authService.verifyOAuthState(state);
+        inviteToken = sanitizeInviteToken(verified?.inviteToken) || cookieInvite;
+      } catch {
+        /* ignore */
+      }
+      clearGoogleOAuthCookies(res);
+      return loginRedirect(res, null, String(error), savedClientUrl, null, inviteToken);
     }
 
     const verifiedState = authService.verifyOAuthState(state);
     const savedClientUrl =
       verifiedState?.clientUrl || req.cookies[GOOGLE_CLIENT_URL_COOKIE];
-    res.clearCookie(GOOGLE_STATE_COOKIE, { path: '/api/v1/auth' });
-    res.clearCookie(GOOGLE_CLIENT_URL_COOKIE, { path: '/api/v1/auth' });
+    const inviteToken =
+      sanitizeInviteToken(verifiedState?.inviteToken) || cookieInvite;
+    clearGoogleOAuthCookies(res);
 
     if (!code || !verifiedState) {
-      return loginRedirect(res, null, 'invalid_state', savedClientUrl);
+      return loginRedirect(res, null, 'invalid_state', savedClientUrl, null, inviteToken);
     }
 
-    const auth = await authService.googleAuthWithCode(String(code));
+    const auth = await authService.googleAuthWithCode(String(code), {
+      expectedEmail: verifiedState.loginHint || undefined,
+      inviteToken: inviteToken || undefined,
+    });
     setRefreshCookie(res, auth.refreshToken);
     return loginRedirect(res, auth.accessToken, null, savedClientUrl, auth.user);
   } catch (err) {
     const message = resolveGoogleErrorCode(err);
     const savedClientUrl = req.cookies[GOOGLE_CLIENT_URL_COOKIE];
-    res.clearCookie(GOOGLE_CLIENT_URL_COOKIE, { path: '/api/v1/auth' });
-    return loginRedirect(res, null, message, savedClientUrl);
+    let inviteToken = cookieInvite;
+    try {
+      const verifiedState = authService.verifyOAuthState(req.query.state);
+      inviteToken = sanitizeInviteToken(verifiedState?.inviteToken) || cookieInvite;
+    } catch {
+      /* ignore */
+    }
+    clearGoogleOAuthCookies(res);
+    return loginRedirect(res, null, message, savedClientUrl, null, inviteToken);
   }
 }
 

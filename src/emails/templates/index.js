@@ -51,7 +51,7 @@ function inviteEmail({ recipientName, inviterName, loginUrl, acceptUrl, emailTo 
               ${acceptUrl ? 'Accept invite &amp; continue with Google' : 'Sign in with Google'}
             </a>
           </p>
-          ${acceptUrl && loginUrl ? `<p style="font-size:13px;color:#64748b;">Or open <a href="${loginUrl}" style="color:#024ad8;">login</a> and choose <strong>Continue with Google</strong>.</p>` : ''}
+          ${acceptUrl && loginUrl ? `<p style="font-size:13px;color:#64748b;">Use the button above — invited members must continue with <strong>Google</strong> (password login is not available).</p>` : ''}
           <p style="color:#94a3b8;font-size:12px;margin-top:24px;line-height:1.5;">
             This invite expires in 7 days. Invited accounts sign in with Google only — no password is required.
           </p>

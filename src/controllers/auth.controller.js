@@ -22,7 +22,7 @@ const oauthCookieOptions = {
 };
 const refreshCookieOptions = {
   ...oauthCookieOptions,
-  maxAge: 7 * 24 * 60 * 60 * 1000,
+  // Session cookie: cleared when the browser is closed — no multi-day silent login
 };
 
 function setRefreshCookie(res, token) {

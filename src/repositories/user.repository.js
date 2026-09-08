@@ -46,7 +46,15 @@ class UserRepository {
   }
 
   async findByGoogleId(googleId) {
-    return User.findOne({ googleId }).exec();
+    if (!googleId) return null;
+    // Prefer an active account. Soft-deleted rows must not block re-invites.
+    const active = await User.findOne({
+      googleId,
+      isActive: { $ne: false },
+      email: { $not: { $regex: '^deleted_', $options: 'i' } },
+    }).exec();
+    if (active) return active;
+    return null;
   }
 
   async findById(id, { withPassword = false } = {}) {
@@ -75,6 +83,21 @@ class UserRepository {
 
   async updateLastLogin(id) {
     return User.findByIdAndUpdate(id, { lastLoginAt: new Date() }).exec();
+  }
+
+  async deleteById(id) {
+    return User.findByIdAndDelete(id).exec();
+  }
+
+  /** Remove soft-deleted clones for an email so re-invite is a clean Google onboarding. */
+  async purgeSoftDeletedForEmail(email) {
+    const normalized = normalizeEmail(email);
+    if (!normalized) return { deletedCount: 0 };
+    const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const result = await User.deleteMany({
+      email: { $regex: `^deleted_\\d+_.*${escaped}$`, $options: 'i' },
+    }).exec();
+    return { deletedCount: result?.deletedCount || 0 };
   }
 
   async updateById(id, updates) {

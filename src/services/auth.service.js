@@ -351,7 +351,16 @@ class AuthService {
       );
     }
 
+    // If a soft-deleted row still holds this googleId, release it first
     const User = require('../models/user.model');
+    await User.updateMany(
+      {
+        googleId,
+        _id: { $ne: user._id },
+        $or: [{ isActive: false }, { email: { $regex: '^deleted_', $options: 'i' } }],
+      },
+      { $unset: { googleId: 1 } }
+    );
     const $set = {
       googleId,
       authProvider: 'google',

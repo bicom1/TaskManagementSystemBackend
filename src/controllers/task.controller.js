@@ -55,8 +55,12 @@ async function move(req, res) {
 }
 
 async function remove(req, res) {
-  await taskService.delete(req.params.id, actorFrom(req));
-  res.status(httpStatus.StatusCodes.NO_CONTENT).send();
+  const result = await taskService.delete(req.params.id, actorFrom(req));
+  res.status(httpStatus.StatusCodes.OK).json({
+    success: true,
+    message: 'Task deleted',
+    data: result,
+  });
 }
 
 async function getActivity(req, res) {

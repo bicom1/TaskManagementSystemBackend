@@ -450,7 +450,12 @@ class TaskService {
       metadata: { projectId: existing.project?._id || existing.project },
     });
 
-    return task;
+    return {
+      id,
+      _id: id,
+      title: existing.title || 'Untitled',
+      projectId: existing.project?._id || existing.project || null,
+    };
   }
 
   async #notifyTaskStatusChange(task, actorId, projectId, newStatus) {

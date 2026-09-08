@@ -230,6 +230,10 @@ class UserService {
     const role = normalizeRole(rawRole);
 
     const normalizedEmail = email.trim().toLowerCase();
+
+    // Remove leftover soft-deleted clones so invite creates a clean Google-only user
+    await userRepository.purgeSoftDeletedForEmail(normalizedEmail);
+
     const existingUser = await userRepository.findByEmailInsensitiveWithInvite(normalizedEmail, {
       withPassword: true,
     });
@@ -375,26 +379,39 @@ class UserService {
       undefined;
 
     /** Invited users must activate via Google Sign-In with the invited email. */
-    const applyGoogleInviteFields = (doc) => {
-      doc.name = displayName;
-      doc.role = role || ROLES.EMPLOYEE;
-      doc.jobTitle = resolvedJobTitle || doc.jobTitle || null;
-      doc.department = resolvedDepartment;
-      doc.invitePending = true;
-      doc.invitedBy = actor.id;
-      doc.inviteToken = inviteHashed;
-      doc.inviteTokenExpires = inviteExpires;
-      doc.isActive = true;
-      doc.authProvider = 'google';
-      doc.password = undefined;
-      doc.googleId = undefined;
+    const applyGoogleInviteFields = async (doc) => {
+      const UserModel = require('../models/user.model');
+      await UserModel.updateOne(
+        { _id: doc._id },
+        {
+          $set: {
+            name: displayName,
+            role: role || ROLES.EMPLOYEE,
+            jobTitle: resolvedJobTitle || doc.jobTitle || null,
+            department: resolvedDepartment,
+            invitePending: true,
+            invitedBy: actor.id,
+            inviteToken: inviteHashed,
+            inviteTokenExpires: inviteExpires,
+            isActive: true,
+            authProvider: 'google',
+            deactivatedAt: null,
+            lastLoginAt: null,
+          },
+          $unset: {
+            password: 1,
+            googleId: 1,
+            passwordResetToken: 1,
+            passwordResetExpires: 1,
+          },
+        }
+      );
+      return UserModel.findById(doc._id).select('+inviteToken +inviteTokenExpires');
     };
 
     let user;
     if (isReinvite) {
-      applyGoogleInviteFields(existingUser);
-      await existingUser.save();
-      user = existingUser;
+      user = await applyGoogleInviteFields(existingUser);
     } else {
       try {
         user = await userRepository.create({
@@ -428,9 +445,7 @@ class UserService {
               dup.isActive === false ||
               !dup.lastLoginAt);
           if (dup && dupCanReinvite) {
-            applyGoogleInviteFields(dup);
-            await dup.save();
-            user = dup;
+            user = await applyGoogleInviteFields(dup);
           } else {
             throw ApiError.conflict('A user with this email already exists');
           }
@@ -728,7 +743,9 @@ class UserService {
   }
 
   /**
-   * Soft-delete: deactivate. Hard delete only for Super Admin on invite-pending users.
+   * Hard-delete Admin/Member: remove the user document and detach refs.
+   * Re-inviting the same email creates a fresh invitePending user who must
+   * accept again with Google (no leftover googleId / password).
    */
   async deleteUser(actor, id) {
     policy.assertPermission(actor, PERMISSIONS.USER_MANAGE);
@@ -746,44 +763,71 @@ class UserService {
       throw ApiError.forbidden('Cannot delete a Super Admin');
     }
 
-    // Soft delete
     const displayName = target.name;
-    const updated = await userRepository.updateById(id, {
-      isActive: false,
-      deactivatedAt: new Date(),
-      email: `deleted_${Date.now()}_${target.email}`,
-      tokenVersion: (target.tokenVersion || 0) + 1,
-    });
+    const originalEmail = String(target.email || '').toLowerCase().trim();
+    const userId = target._id;
+    const actorId = actor.id || actor._id;
+
+    const Team = require('../models/team.model');
+    const Project = require('../models/project.model');
+    const Task = require('../models/task.model');
+    const Department = require('../models/department.model');
+    const Notification = require('../models/notification.model');
+    const Conversation = require('../models/conversation.model');
+
+    // Detach memberships / ownership before removing the user row
+    await Promise.all([
+      Team.updateMany({ members: userId }, { $pull: { members: userId } }),
+      Team.updateMany({ lead: userId }, { $set: { lead: actorId } }),
+      Project.updateMany({ members: userId }, { $pull: { members: userId } }),
+      Task.updateMany({ assignees: userId }, { $pull: { assignees: userId } }),
+      Department.updateMany({ head: userId }, { $set: { head: null } }),
+      Notification.deleteMany({ recipient: userId }),
+      Conversation.updateMany(
+        { participants: userId },
+        { $pull: { participants: userId } }
+      ),
+    ]);
+
+    await userRepository.deleteById(userId);
+
+    // Clean any historical soft-delete clones for this email
+    if (originalEmail) {
+      await userRepository.purgeSoftDeletedForEmail(originalEmail);
+    }
 
     await activityService
       .record({
-        actor: actor.id,
+        actor: actorId,
         action: 'user_deleted',
         entityType: 'Project',
-        entityId: id,
-        metadata: { email: target.email, name: displayName },
+        entityId: userId,
+        metadata: { email: originalEmail, name: displayName, hardDelete: true },
       })
       .catch(() => {});
 
     const safe = {
-      ...updated.toSafeObject(),
+      _id: userId,
+      id: String(userId),
+      email: originalEmail,
       name: displayName,
       deletedName: displayName,
+      role: target.role,
     };
     emitUserEvent('user:deleted', safe);
-    forceDisconnectUser(id, {
+    forceDisconnectUser(String(userId), {
       reason: 'deleted',
       name: displayName,
-      message: `Your account has been deleted. Please contact your administrator.`,
+      message: 'Your account has been deleted. Please contact your administrator.',
     });
 
     await notifySuperAdmins({
-      actorId: actor.id,
+      actorId,
       type: NOTIFICATION_TYPES.USER_DELETED,
-      message: `User "${displayName}" was deleted`,
+      message: `Member "${displayName}" (${originalEmail}) was deleted`,
       entityType: 'User',
-      entityId: id,
-      emailSubject: `User deleted: ${displayName}`,
+      entityId: userId,
+      emailSubject: `Member deleted: ${displayName}`,
       emailToo: false,
     });
 

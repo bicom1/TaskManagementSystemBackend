@@ -410,7 +410,65 @@ class TaskService {
     if (!existing) throw ApiError.notFound('Task not found');
     policy.assertTaskManage(actor, existing, existing.project);
 
-    const task = await taskRepository.updateById(id, { status, position });
+    const projectId = existing.project?._id || existing.project;
+    const sourceStatus = existing.status;
+
+    // Renumber the destination column instead of only stamping the moved task.
+    // Previously every card kept whatever position it was created with, so a
+    // column could hold several tasks at the same index; Mongo then ordered the
+    // ties arbitrarily and a reordered card snapped back on the next refetch.
+    const siblings = await Task.find({
+      project: projectId,
+      status,
+      isArchived: false,
+      _id: { $ne: existing._id },
+    })
+      .sort({ position: 1, createdAt: 1 })
+      .select('_id')
+      .lean();
+
+    const insertAt = Math.max(0, Math.min(Number(position) || 0, siblings.length));
+    const ordered = [
+      ...siblings.slice(0, insertAt).map((t) => t._id),
+      existing._id,
+      ...siblings.slice(insertAt).map((t) => t._id),
+    ];
+
+    await Task.bulkWrite(
+      ordered.map((taskId, index) => ({
+        updateOne: {
+          filter: { _id: taskId },
+          update: {
+            $set:
+              String(taskId) === String(existing._id)
+                ? { position: index, status }
+                : { position: index },
+          },
+        },
+      }))
+    );
+
+    // Leaving the old column also leaves a gap in its numbering.
+    if (sourceStatus !== status) {
+      const remaining = await Task.find({
+        project: projectId,
+        status: sourceStatus,
+        isArchived: false,
+      })
+        .sort({ position: 1, createdAt: 1 })
+        .select('_id')
+        .lean();
+
+      if (remaining.length) {
+        await Task.bulkWrite(
+          remaining.map((t, index) => ({
+            updateOne: { filter: { _id: t._id }, update: { $set: { position: index } } },
+          }))
+        );
+      }
+    }
+
+    const task = await taskRepository.findById(id);
 
     if (status !== existing.status) {
       await activityService.record({

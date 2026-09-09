@@ -203,6 +203,9 @@ class ProjectService {
             project: { $in: ids },
             isArchived: { $ne: true },
             status: { $ne: 'done' },
+            // Top-level tasks only — a subtask is counted through its parent, so
+            // including both made the sidebar badge read higher than the list.
+            parentTask: null,
           },
         },
         { $group: { _id: '$project', count: { $sum: 1 } } },

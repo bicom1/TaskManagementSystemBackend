@@ -541,7 +541,7 @@ class TaskService {
             entityType: 'Task',
             entityId: task._id,
             metadata: { projectId: projectKey },
-            emailToo: true,
+            emailToo: false,
             emailSubject: `Task updated: ${task.title}`,
           })
           .catch(() => {})
@@ -569,6 +569,11 @@ class TaskService {
       Boolean
     );
 
+    const userRepository = require('../repositories/user.repository');
+    const actorUser = await userRepository.findById(actorId);
+    const actorName = actorUser?.name || 'A teammate';
+    const title = task.title || 'Untitled';
+
     await Promise.all(
       assigneeIds
         .filter((assigneeId) => assigneeId !== actorKey)
@@ -577,12 +582,12 @@ class TaskService {
             recipient: assigneeId,
             sender: actorId,
             type: NOTIFICATION_TYPES.TASK_ASSIGNED,
-            message: `You were assigned to "${task.title}"`,
+            message: `${actorName} assigned you the task "${title}"`,
             entityType: 'Task',
             entityId: task._id,
             emailToo: true,
             metadata: { projectId },
-            emailSubject: `Task assigned: ${task.title}`,
+            emailSubject: `${actorName} assigned you a task — ${title}`,
           })
         )
     );

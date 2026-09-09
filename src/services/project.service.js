@@ -156,8 +156,9 @@ class ProjectService {
       project: populated || project,
       actorId: actor.id,
       type: NOTIFICATION_TYPES.PROJECT_CREATED,
-      message: `You were added to project "${payload.name}"`,
-      emailSubject: `New project: ${payload.name}`,
+      message: null, // filled with actor name inside helper
+      emailSubject: null,
+      projectName: payload.name,
     });
 
     await notifySuperAdmins({
@@ -319,16 +320,19 @@ class ProjectService {
     );
 
     if (String(userId) !== String(actor.id)) {
+      const userRepository = require('../repositories/user.repository');
+      const actorUser = await userRepository.findById(actor.id);
+      const actorName = actorUser?.name || 'A teammate';
       await notificationService
         .notify({
           recipient: userId,
           sender: actor.id,
           type: NOTIFICATION_TYPES.PROJECT_MEMBER_ADDED,
-          message: `You were added to project "${existing.name}"`,
+          message: `${actorName} assigned you to the project "${existing.name}"`,
           entityType: 'Project',
           entityId: projectId,
           emailToo: true,
-          emailSubject: `Added to project: ${existing.name}`,
+          emailSubject: `${actorName} assigned you a project — ${existing.name}`,
         })
         .catch(() => {});
     }
@@ -377,11 +381,20 @@ class ProjectService {
     return { id, name: existing.name };
   }
 
-  async #notifyProjectMembers({ project, actorId, type, message, emailSubject }) {
+  async #notifyProjectMembers({ project, actorId, type, message, emailSubject, projectName }) {
     const actorKey = String(actorId);
     const memberIds = [...new Set((project.members || []).map((m) => String(m._id || m)))].filter(
       Boolean
     );
+
+    const userRepository = require('../repositories/user.repository');
+    const actorUser = await userRepository.findById(actorId);
+    const actorName = actorUser?.name || 'A teammate';
+    const name = projectName || project.name || 'a project';
+    const body =
+      message || `${actorName} assigned you to the project "${name}"`;
+    const subject =
+      emailSubject || `${actorName} assigned you a project — ${name}`;
 
     await Promise.all(
       memberIds
@@ -392,11 +405,11 @@ class ProjectService {
               recipient: memberId,
               sender: actorId,
               type,
-              message,
+              message: body,
               entityType: 'Project',
               entityId: project._id,
               emailToo: true,
-              emailSubject,
+              emailSubject: subject,
             })
             .catch(() => {})
         )

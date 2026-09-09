@@ -5,8 +5,6 @@ const teamRepository = require('../repositories/team.repository');
 const notificationService = require('./notification.service');
 const ApiError = require('../utils/ApiError.util');
 const { NOTIFICATION_TYPES } = require('../constants/notification.constant');
-const { ROLES } = require('../constants/roles.constant');
-const { sendMail } = require('../emails/mailer.util');
 const { emitMessage } = require('../socket/socket');
 
 class MessageService {
@@ -72,6 +70,7 @@ class MessageService {
 
       emitMessage(populated || message, [recipientId]);
 
+      // In-app only — never email chat/query messages (those looked like task assigns)
       // eslint-disable-next-line no-await-in-loop
       await notificationService.notify({
         recipient: recipientId,
@@ -80,23 +79,8 @@ class MessageService {
         message: `New query: ${subject}`,
         entityType: 'Comment',
         entityId: message._id,
-        emailToo: true,
+        emailToo: false,
       });
-
-      // eslint-disable-next-line no-await-in-loop
-      const recipient = await userRepository.findById(recipientId);
-      if (recipient?.email) {
-        try {
-          // eslint-disable-next-line no-await-in-loop
-          await sendMail({
-            to: recipient.email,
-            subject: `[BIWORKSPACE] ${subject}`,
-            html: `<p>You have a new workplace query.</p><p><strong>${subject}</strong></p><p>${body}</p>`,
-          });
-        } catch {
-          /* logged by mailer */
-        }
-      }
     }
 
     return messages.length === 1 ? messages[0] : messages;

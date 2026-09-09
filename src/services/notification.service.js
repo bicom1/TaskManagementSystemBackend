@@ -9,8 +9,17 @@ const { getEmailAppUrl, ensureLiveEmailUrl } = require('../utils/clientUrl.util'
 const {
   NOTIFICATION_SCOPES,
   SYSTEM_ONLY_TYPES,
+  NOTIFICATION_TYPES,
 } = require('../constants/notification.constant');
 const { ROLES, normalizeRole } = require('../constants/roles.constant');
+
+/** Only these in-app events may also send email (invites use sendMail directly). */
+const EMAIL_ALLOWED_TYPES = new Set([
+  NOTIFICATION_TYPES.TASK_ASSIGNED,
+  NOTIFICATION_TYPES.PROJECT_CREATED,
+  NOTIFICATION_TYPES.PROJECT_MEMBER_ADDED,
+  NOTIFICATION_TYPES.PROJECT_INVITE,
+]);
 
 function buildActionUrl({ entityType, entityId, metadata = {} }) {
   const base = getEmailAppUrl();
@@ -127,16 +136,28 @@ class NotificationService {
       // Socket.IO not initialized — skip silently
     }
 
-    if (emailToo) {
+    if (emailToo && EMAIL_ALLOWED_TYPES.has(type)) {
       try {
         const user = await userRepository.findById(recipient);
         if (user?.email) {
+          let emailMessage = message;
+          // Prefer sender's display name in the email body when available
+          try {
+            if (sender && !/assigned you/i.test(String(message || ''))) {
+              const senderUser = await userRepository.findById(sender);
+              if (senderUser?.name) {
+                emailMessage = `${senderUser.name}: ${message}`;
+              }
+            }
+          } catch {
+            /* keep original message */
+          }
           const resolvedActionUrl =
             actionUrl || buildActionUrl({ entityType, entityId, metadata });
           await deliverNotificationEmail({
             to: user.email,
             recipientName: user.name,
-            message,
+            message: emailMessage,
             actionUrl: resolvedActionUrl,
             subject: emailSubject,
           });

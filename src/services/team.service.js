@@ -248,7 +248,7 @@ class TeamService {
           message: `You were added to team "${team.name}".${projectHint}`,
           entityType: 'Project',
           entityId: teamProjects[0]?._id || teamId,
-          emailToo: true,
+          emailToo: false,
         })
         .catch(() => {});
     }

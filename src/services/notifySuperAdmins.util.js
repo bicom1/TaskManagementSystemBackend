@@ -16,7 +16,7 @@ async function notifySuperAdmins({
   entityId,
   emailSubject,
   metadata = {},
-  emailToo = true,
+  emailToo = false,
   excludeIds = [],
 }) {
   const result = await userRepository.findPaginated(

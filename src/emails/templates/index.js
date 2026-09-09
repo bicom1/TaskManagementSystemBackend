@@ -2,12 +2,12 @@ function notificationEmail({ recipientName, message, actionUrl }) {
   return `
     <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; color: #1a1a1a;">
       <p style="font-size:12px;color:#636363;margin:0 0 16px;">BIWORKSPACE</p>
-      <h2 style="font-weight: 500;">Hi ${recipientName},</h2>
-      <p>${message}</p>
+      <h2 style="font-weight: 500;">Hi ${recipientName || 'there'},</h2>
+      <p style="line-height:1.5;font-size:15px;">${message}</p>
       ${actionUrl ? `<p style="margin:24px 0;"><a href="${actionUrl}" style="display:inline-block;background:#024ad8;color:#fff;padding:12px 20px;text-decoration:none;border-radius:6px;font-weight:600;">Open in BIWORKSPACE</a></p>` : ''}
       ${actionUrl ? `<p style="font-size:12px;color:#636363;word-break:break-all;">${actionUrl}</p>` : ''}
       <hr style="border:none;border-top:1px solid #e8e8e8;margin:24px 0;" />
-      <p style="color:#636363;font-size:12px;">You're receiving this because of activity in your BIWORKSPACE account.</p>
+      <p style="color:#636363;font-size:12px;">You're receiving this because you were assigned work in BIWORKSPACE.</p>
     </div>
   `;
 }

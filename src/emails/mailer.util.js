@@ -218,21 +218,6 @@ function getTransporter() {
   return transporter;
 }
 
-function wrapRedirectedInviteHtml(intendedTo, html) {
-  return `
-    <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;">
-      <div style="background:#fff7ed;border:1px solid #fdba74;border-radius:8px;padding:14px 16px;margin-bottom:16px;color:#9a3412;">
-        <strong>Temporary Resend test mode</strong><br/>
-        Domain not verified yet, so this invite was delivered to your Resend account inbox.<br/>
-        <strong>Intended recipient:</strong> ${intendedTo}<br/>
-        Forward this email to them, or share the accept link / password from the invite screen.<br/>
-        Later: verify your domain at resend.com/domains to send directly to any user.
-      </div>
-      ${html}
-    </div>
-  `;
-}
-
 async function listVerifiedResendDomains(apiKey) {
   if (resendDomainCache && Date.now() - resendDomainCache.at < RESEND_DOMAIN_CACHE_MS) {
     return resendDomainCache.verified;
@@ -328,25 +313,21 @@ async function sendViaResend({ to, subject, html, text, replyTo }, { allowRedire
       return sendViaResend({ to, subject, html, text, replyTo }, { allowRedirect: true });
     }
 
-    // Test-mode recipient limit: deliver to the Resend account inbox instead
+    // Unverified Resend accounts can only deliver to the account inbox —
+    // still send the clean professional invite (no test-mode banner in the email).
     if (!usingVerifiedDomain && allowRedirect && match?.[1]) {
       const allowedInbox = String(match[1]).trim().toLowerCase();
       const intended = String(to).trim().toLowerCase();
       if (allowedInbox && intended !== allowedInbox) {
         logger.warn(
-          `Resend test mode: redirecting email for ${intended} → ${allowedInbox} (verify bicomworkspace.com for direct delivery)`
+          `Resend cannot deliver to ${intended} until ${PRIMARY_SEND_DOMAIN} is verified — sending invite to ${allowedInbox}`
         );
         const redirected = await sendViaResend(
           {
             to: allowedInbox,
-            subject: `[Invite for ${intended}] ${subject}`,
-            html: wrapRedirectedInviteHtml(intended, html),
-            text: [
-              `TEMPORARY: intended recipient is ${intended}`,
-              `Delivered to Resend account inbox ${allowedInbox} until domain is verified.`,
-              ``,
-              plainTextFromHtml(html, text),
-            ].join('\n'),
+            subject,
+            html,
+            text: plainTextFromHtml(html, text),
             replyTo,
           },
           { allowRedirect: false }

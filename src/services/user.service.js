@@ -535,7 +535,7 @@ class UserService {
       ]);
       emailDelivered = Boolean(mailResult && !mailResult.logged);
       via = mailResult?.provider || 'unknown';
-      emailRedirectedTo = mailResult?.redirectedTo || null;
+      emailRedirectedTo = mailResult?.emailRedirectedTo || mailResult?.redirectedTo || null;
       if (mailResult?.from) emailFrom = mailResult.from;
       if (mailResult?.logged) {
         emailError = 'Email provider is not configured on this server';
@@ -552,9 +552,9 @@ class UserService {
 
     const emailNote = emailDelivered
       ? isReinvite
-        ? 'Invite email re-sent from BIWORKSPACE. Check inbox/spam, or share the link below.'
-        : 'Invite email sent from BIWORKSPACE. Check inbox/spam, or share the link below.'
-      : `Invite created, but email was not delivered (${emailError || 'unknown'}). Share the direct link below on WhatsApp. On live, set RESEND_API_KEY + EMAIL_PROVIDER=resend on Render (SMTP does not work there).`;
+        ? 'Invitation email re-sent. Ask them to check inbox and spam.'
+        : 'Invitation email sent. Ask them to check inbox and spam.'
+      : `Invite created, but the email was not delivered${emailError ? ` (${emailError})` : ''}. Share the invite link below.`;
 
 
     await notificationService

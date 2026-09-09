@@ -735,11 +735,60 @@ class UserService {
   }
 
   async deactivate(actor, id) {
-    return this.updateUser(actor, id, { isActive: false });
+    const updated = await this.updateUser(actor, id, { isActive: false });
+    // Inactive accounts must leave live assignments / chat directories immediately.
+    await this.#detachUserFromWorkspace(id, actor.id || actor._id, { deactivateConversations: true });
+    return updated;
   }
 
   async reactivate(actor, id) {
     return this.updateUser(actor, id, { isActive: true });
+  }
+
+  /**
+   * Pull a user out of teams, projects, tasks, meetings, and chat so they no
+   * longer appear as an assignee, member, or chat contact.
+   */
+  async #detachUserFromWorkspace(userId, actorId, { deactivateConversations = true } = {}) {
+    const Team = require('../models/team.model');
+    const Project = require('../models/project.model');
+    const Task = require('../models/task.model');
+    const Department = require('../models/department.model');
+    const Notification = require('../models/notification.model');
+    const Conversation = require('../models/conversation.model');
+    const Meeting = require('../models/meeting.model');
+    const Comment = require('../models/comment.model');
+
+    const uid = userId;
+
+    await Promise.all([
+      Team.updateMany({ members: uid }, { $pull: { members: uid } }),
+      Team.updateMany({ lead: uid }, { $set: { lead: actorId } }),
+      Project.updateMany({ members: uid }, { $pull: { members: uid } }),
+      Project.updateMany({ developer: uid }, { $set: { developer: null } }),
+      Project.updateMany({ owner: uid }, { $set: { owner: actorId } }),
+      Task.updateMany({ assignees: uid }, { $pull: { assignees: uid } }),
+      Department.updateMany({ head: uid }, { $set: { head: null } }),
+      Meeting.updateMany({ attendees: uid }, { $pull: { attendees: uid } }),
+      Comment.updateMany({ mentions: uid }, { $pull: { mentions: uid } }),
+      Notification.deleteMany({ recipient: uid }),
+      Conversation.updateMany(
+        { participants: uid },
+        { $pull: { participants: uid, readState: { user: uid } } }
+      ),
+    ]);
+
+    if (deactivateConversations) {
+      // 1:1 DMs with a removed member must disappear from chat lists.
+      await Conversation.updateMany(
+        { type: 'dm', participants: { $size: 1 } },
+        { $set: { isActive: false } }
+      );
+      await Conversation.updateMany(
+        { type: 'dm', participants: { $size: 0 } },
+        { $set: { isActive: false } }
+      );
+    }
   }
 
   /**
@@ -768,26 +817,7 @@ class UserService {
     const userId = target._id;
     const actorId = actor.id || actor._id;
 
-    const Team = require('../models/team.model');
-    const Project = require('../models/project.model');
-    const Task = require('../models/task.model');
-    const Department = require('../models/department.model');
-    const Notification = require('../models/notification.model');
-    const Conversation = require('../models/conversation.model');
-
-    // Detach memberships / ownership before removing the user row
-    await Promise.all([
-      Team.updateMany({ members: userId }, { $pull: { members: userId } }),
-      Team.updateMany({ lead: userId }, { $set: { lead: actorId } }),
-      Project.updateMany({ members: userId }, { $pull: { members: userId } }),
-      Task.updateMany({ assignees: userId }, { $pull: { assignees: userId } }),
-      Department.updateMany({ head: userId }, { $set: { head: null } }),
-      Notification.deleteMany({ recipient: userId }),
-      Conversation.updateMany(
-        { participants: userId },
-        { $pull: { participants: userId } }
-      ),
-    ]);
+    await this.#detachUserFromWorkspace(userId, actorId, { deactivateConversations: true });
 
     await userRepository.deleteById(userId);
 

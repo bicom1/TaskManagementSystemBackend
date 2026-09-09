@@ -89,8 +89,9 @@ class ChatService {
   async listDirectory(actorId) {
     const actor = await User.findById(actorId).select('role department').lean();
     const isSuperAdmin = actor?.role === ROLES.SUPER_ADMIN;
+    const isAdmin = actor?.role === ROLES.ADMIN;
 
-    const [allTeams, departments, conversations] = await Promise.all([
+    const [allTeams, departments] = await Promise.all([
       Team.find({ isActive: true })
         .select('name department lead members')
         .populate('department', 'name code')
@@ -100,22 +101,46 @@ class ChatService {
         .select('name code head')
         .sort({ name: 1 })
         .lean(),
-      Conversation.find({ isActive: true, participants: actorId })
-        .select('participants')
-        .lean(),
     ]);
 
     const myTeams = uniqueById(
       allTeams.filter((t) => isTeamMember(t, actorId)),
       (t) => String(t._id)
     );
-    const teams = uniqueById(isSuperAdmin ? allTeams : myTeams, (t) => String(t._id));
+    const teams = uniqueById(isSuperAdmin || isAdmin ? allTeams : myTeams, (t) => String(t._id));
 
-    // Anyone in the workspace can be messaged, whatever your role. This used to
-    // narrow non-Super Admins to their own teams, department peers and people
-    // they had already chatted with, so a member could not find — or even
-    // search for — most colleagues.
-    const people = await User.find({ isActive: true })
+    // WhatsApp-style: every department is a group chat with all its members.
+    // Members see their own department; Admin + Super Admin can open any group.
+    const visibleDepartments = uniqueById(
+      isSuperAdmin || isAdmin
+        ? departments
+        : departments.filter(
+            (d) =>
+              String(d.head) === String(actorId) ||
+              String(d._id) === String(actor?.department)
+          ),
+      (d) => String(d._id)
+    );
+
+    const departmentGroups = [];
+    for (const dept of visibleDepartments) {
+      try {
+        const conv = await this.getOrCreateDepartmentChat(actorId, dept._id);
+        departmentGroups.push({
+          ...dept,
+          conversationId: conv?._id || null,
+          memberCount: (conv?.participants || []).length,
+        });
+      } catch {
+        departmentGroups.push({ ...dept, conversationId: null, memberCount: 0 });
+      }
+    }
+
+    const people = await User.find({
+      isActive: true,
+      invitePending: { $ne: true },
+      email: { $not: { $regex: '^deleted_', $options: 'i' } },
+    })
       .select('name email avatarUrl jobTitle role department lastLoginAt lastSeenAt')
       .populate('department', 'name code')
       .sort({ name: 1 })
@@ -126,16 +151,8 @@ class ChatService {
       people: uniqueById(people, (p) => String(p._id)),
       teams,
       myTeams,
-      departments: uniqueById(
-        isSuperAdmin
-          ? departments
-          : departments.filter(
-              (d) =>
-                String(d.head) === String(actorId) ||
-                String(d._id) === String(actor?.department)
-            ),
-        (d) => String(d._id)
-      ),
+      departments: visibleDepartments,
+      departmentGroups,
       limits: {
         maxFiles: MAX_FILES_PER_MESSAGE,
         maxLinks: MAX_LINKS_PER_MESSAGE,
@@ -208,18 +225,18 @@ class ChatService {
   async listConversations(userId, { page = 1, limit = 40 } = {}) {
     const skip = (page - 1) * limit;
     const isSuperAdmin = await this.#isSuperAdmin(userId);
-    // Only conversations somebody has actually written in belong in the list.
-    // Opening a person or channel creates the row immediately, so without this
-    // every name you ever clicked shows up as an empty "Conversation started".
-    // lastMessageAt defaults to the creation time, so lastMessageBy is the signal.
-    const hasMessages = { lastMessageBy: { $ne: null } };
+    // DMs only after someone has written; department/team groups always list
+    // like WhatsApp so members can open the group even before the first message.
+    const listable = {
+      $or: [
+        { lastMessageBy: { $ne: null } },
+        { type: { $in: ['department', 'team'] } },
+      ],
+    };
 
-    // Super Admin sees every conversation in the workspace, direct messages
-    // included. Everyone else sees only conversations they are a participant of,
-    // which covers their DMs and the channels of teams they belong to.
     const filter = isSuperAdmin
-      ? { isActive: true, ...hasMessages }
-      : { isActive: true, ...hasMessages, participants: userId };
+      ? { isActive: true, ...listable }
+      : { isActive: true, ...listable, participants: userId };
 
     const [rows, total] = await Promise.all([
       populateConversation(
@@ -241,7 +258,10 @@ class ChatService {
           : false;
       return {
         ...c,
-        participants: uniqueById(c.participants || [], (p) => String(p._id || p)),
+        participants: uniqueById(
+          (c.participants || []).filter((p) => p && (p._id || p)),
+          (p) => String(p._id || p)
+        ),
         unread,
         shareUrl: emailPath(`/inbox?chat=${c._id}`),
       };
@@ -265,7 +285,10 @@ class ChatService {
 
     return {
       ...conversation,
-      participants: uniqueById(conversation.participants || [], (p) => String(p._id || p)),
+      participants: uniqueById(
+        (conversation.participants || []).filter((p) => p && (p._id || p)),
+        (p) => String(p._id || p)
+      ),
       shareUrl: emailPath(`/inbox?chat=${conversation._id}`),
     };
   }
@@ -275,8 +298,17 @@ class ChatService {
       throw ApiError.badRequest('Cannot start a chat with yourself');
     }
 
-    const other = await User.findById(otherUserId).select('_id name isActive').lean();
-    if (!other || !other.isActive) throw ApiError.notFound('User not found');
+    const other = await User.findById(otherUserId)
+      .select('_id name isActive invitePending email')
+      .lean();
+    if (
+      !other ||
+      !other.isActive ||
+      other.invitePending ||
+      String(other.email || '').toLowerCase().startsWith('deleted_')
+    ) {
+      throw ApiError.notFound('User not found');
+    }
 
     // Any active member of the workspace can be messaged by anyone.
 
@@ -411,22 +443,31 @@ class ChatService {
 
     const actor = await User.findById(actorId).select('role department').lean();
     const isSuperAdmin = actor?.role === ROLES.SUPER_ADMIN;
+    const isAdmin = actor?.role === ROLES.ADMIN;
     const inDept =
       String(actor?.department || '') === String(departmentId) ||
       String(dept.head || '') === String(actorId);
-    if (!isSuperAdmin && !inDept) {
-      throw ApiError.forbidden('Only department members can open this channel');
+    if (!isSuperAdmin && !isAdmin && !inDept) {
+      throw ApiError.forbidden('Only department members can open this group');
     }
 
     await this.stripGroupChatDmKeys();
 
-    const people = await User.find({ isActive: true, department: departmentId })
+    // All active members of the department belong in the group (WhatsApp-style).
+    const people = await User.find({
+      isActive: true,
+      invitePending: { $ne: true },
+      department: departmentId,
+      email: { $not: { $regex: '^deleted_', $options: 'i' } },
+    })
       .select('_id')
       .lean();
-    const memberIds = [...new Set(people.map((p) => String(p._id)))];
+    const memberIds = people.map((p) => String(p._id));
     if (dept.head) memberIds.push(String(dept.head));
+    // Managers joining for oversight still become participants so the thread opens.
+    if (isSuperAdmin || isAdmin) memberIds.push(String(actorId));
     memberIds.push(String(actorId));
-    const unique = [...new Set(memberIds)];
+    const unique = [...new Set(memberIds.filter(Boolean))];
 
     let conversation = await Conversation.findOne({
       type: 'department',
@@ -438,14 +479,16 @@ class ChatService {
         conversation = await Conversation.create({
           type: 'department',
           department: departmentId,
-          title: `${dept.name} · Department`,
+          title: `${dept.name}`,
           participants: unique,
           createdBy: actorId,
           readState: unique.map((id) => ({
             user: id,
             lastReadAt: id === String(actorId) ? new Date() : new Date(0),
           })),
-          lastMessagePreview: 'Department chat started',
+          lastMessageBy: actorId,
+          lastMessageAt: new Date(),
+          lastMessagePreview: 'Department group created',
         });
         await Conversation.updateOne({ _id: conversation._id }, { $unset: { dmKey: 1 } });
       } catch (err) {
@@ -461,8 +504,11 @@ class ChatService {
     await Conversation.updateOne(
       { _id: conversation._id },
       {
-        $addToSet: { participants: { $each: unique } },
-        $set: { isActive: true, title: `${dept.name} · Department` },
+        $set: {
+          isActive: true,
+          title: `${dept.name}`,
+          participants: unique,
+        },
         $unset: { dmKey: 1 },
       }
     );

@@ -493,6 +493,7 @@ module.exports = {
   emitMessage,
   emitChatMessage,
   emitConversationUpdated,
+
   emitProjectEvent,
   emitTaskEvent,
   emitUserEvent,

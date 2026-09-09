@@ -5,6 +5,7 @@ const ApiError = require('../utils/ApiError.util');
 const { NOTIFICATION_TYPES } = require('../constants/notification.constant');
 const { ROLES, DEPARTMENT_PRESETS } = require('../constants/roles.constant');
 const Department = require('../models/department.model');
+const Team = require('../models/team.model');
 
 class DepartmentService {
   /** Ensure SEO, Development, and UI/UX Designing exist so invite dropdown always has them */
@@ -22,11 +23,14 @@ class DepartmentService {
         existing = await Department.findOne({ name: namePattern });
       }
       if (existing) {
+        // Only repair the slug and revive the row — never overwrite name or
+        // description, or a Superadmin renaming a built-in department would see
+        // it snap back on the next list call.
         await Department.findByIdAndUpdate(existing._id, {
           code: preset.code,
-          name: preset.name,
-          description: preset.description || existing.description,
           isActive: true,
+          ...(existing.name ? {} : { name: preset.name }),
+          ...(existing.description ? {} : { description: preset.description }),
         });
         continue;
       }
@@ -99,6 +103,19 @@ class DepartmentService {
   }
 
   async deactivate(id) {
+    const existing = await departmentRepository.findById(id);
+    if (!existing) throw ApiError.notFound('Department not found');
+
+    // Teams carry a required department reference, so removing one out from under
+    // them leaves teams pointing at a department no list will ever return.
+    const teamCount = await Team.countDocuments({ department: id, isActive: true });
+    if (teamCount > 0) {
+      throw ApiError.badRequest(
+        `"${existing.name}" still has ${teamCount} team${teamCount === 1 ? '' : 's'}. ` +
+          'Move or delete them first.'
+      );
+    }
+
     const department = await departmentRepository.updateById(id, { isActive: false });
     if (!department) throw ApiError.notFound('Department not found');
     return department;

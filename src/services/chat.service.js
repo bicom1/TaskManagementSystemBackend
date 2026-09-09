@@ -222,16 +222,29 @@ class ChatService {
       (p) => String(p._id || p) === String(userId)
     );
     if (isParticipant) return true;
+
+    // Super Admin has full oversight of every conversation, direct messages
+    // included. Everyone else must be a participant.
     if (await this.#isSuperAdmin(userId)) return true;
+
     throw ApiError.forbidden('You are not in this conversation');
   }
 
   async listConversations(userId, { page = 1, limit = 40 } = {}) {
     const skip = (page - 1) * limit;
     const isSuperAdmin = await this.#isSuperAdmin(userId);
+    // Only conversations somebody has actually written in belong in the list.
+    // Opening a person or channel creates the row immediately, so without this
+    // every name you ever clicked shows up as an empty "Conversation started".
+    // lastMessageAt defaults to the creation time, so lastMessageBy is the signal.
+    const hasMessages = { lastMessageBy: { $ne: null } };
+
+    // Super Admin sees every conversation in the workspace, direct messages
+    // included. Everyone else sees only conversations they are a participant of,
+    // which covers their DMs and the channels of teams they belong to.
     const filter = isSuperAdmin
-      ? { isActive: true }
-      : { isActive: true, participants: userId };
+      ? { isActive: true, ...hasMessages }
+      : { isActive: true, ...hasMessages, participants: userId };
 
     const [rows, total] = await Promise.all([
       populateConversation(

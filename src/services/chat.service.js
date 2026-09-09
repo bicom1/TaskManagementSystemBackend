@@ -111,33 +111,15 @@ class ChatService {
     );
     const teams = uniqueById(isSuperAdmin ? allTeams : myTeams, (t) => String(t._id));
 
-    let peopleFilter = { isActive: true };
-    if (!isSuperAdmin) {
-      const relatedIds = new Set([String(actorId)]);
-      for (const c of conversations || []) {
-        for (const p of c.participants || []) relatedIds.add(String(p));
-      }
-      for (const t of myTeams) {
-        if (t.lead) relatedIds.add(String(t.lead._id || t.lead));
-        for (const m of t.members || []) relatedIds.add(String(m._id || m));
-      }
-      if (actor?.department) {
-        const deptPeers = await User.find({
-          isActive: true,
-          department: actor.department,
-        })
-          .select('_id')
-          .lean();
-        for (const p of deptPeers) relatedIds.add(String(p._id));
-      }
-      peopleFilter = { isActive: true, _id: { $in: [...relatedIds] } };
-    }
-
-    const people = await User.find(peopleFilter)
+    // Anyone in the workspace can be messaged, whatever your role. This used to
+    // narrow non-Super Admins to their own teams, department peers and people
+    // they had already chatted with, so a member could not find — or even
+    // search for — most colleagues.
+    const people = await User.find({ isActive: true })
       .select('name email avatarUrl jobTitle role department lastLoginAt lastSeenAt')
       .populate('department', 'name code')
       .sort({ name: 1 })
-      .limit(isSuperAdmin ? 500 : 200)
+      .limit(500)
       .lean();
 
     return {
@@ -164,9 +146,6 @@ class ChatService {
   }
 
   async searchPeople(actorId, { q = '', department, role, limit = 30 } = {}) {
-    const actor = await User.findById(actorId).select('role department').lean();
-    const isSuperAdmin = actor?.role === ROLES.SUPER_ADMIN;
-
     const filter = {
       isActive: true,
       _id: { $ne: actorId },
@@ -175,13 +154,7 @@ class ChatService {
     if (department) filter.department = department;
     if (role) filter.role = role;
 
-    if (!isSuperAdmin) {
-      const directory = await this.listDirectory(actorId);
-      const allowedIds = (directory.people || [])
-        .map((p) => String(p._id))
-        .filter((id) => id !== String(actorId));
-      filter._id = { $in: allowedIds };
-    }
+    // Search spans the whole workspace for every role — see listDirectory.
 
     if (q && q.trim()) {
       const term = q.trim();
@@ -303,14 +276,7 @@ class ChatService {
     const other = await User.findById(otherUserId).select('_id name isActive').lean();
     if (!other || !other.isActive) throw ApiError.notFound('User not found');
 
-    // Non–Super Admins may only DM people visible in their directory
-    if (!(await this.#isSuperAdmin(actorId))) {
-      const directory = await this.listDirectory(actorId);
-      const allowed = (directory.people || []).some((p) => String(p._id) === String(otherUserId));
-      if (!allowed) {
-        throw ApiError.forbidden('You can only chat with people in your workspace network');
-      }
-    }
+    // Any active member of the workspace can be messaged by anyone.
 
     const dmKey = dmKeyFor(actorId, otherUserId);
     let conversation = await Conversation.findOne({ dmKey, type: 'dm' });

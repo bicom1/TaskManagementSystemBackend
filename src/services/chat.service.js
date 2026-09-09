@@ -148,7 +148,9 @@ class ChatService {
   async searchPeople(actorId, { q = '', department, role, limit = 30 } = {}) {
     const filter = {
       isActive: true,
+      invitePending: { $ne: true },
       _id: { $ne: actorId },
+      email: { $not: { $regex: '^deleted_', $options: 'i' } },
     };
 
     if (department) filter.department = department;

@@ -72,13 +72,15 @@ async function deliverNotificationEmail({
   };
 
   try {
-    await sendMail({
+    const result = await sendMail({
       to,
       subject: payload.subject,
       html: notificationEmail(payload),
     });
-    logger.info(`Notification email sent (direct) → ${to} (${liveUrl})`);
-    return;
+    logger.info(
+      `Notification email sent → ${to} via ${result?.provider || 'mailer'} (${liveUrl})`
+    );
+    return result;
   } catch (directErr) {
     logger.warn(`Notification direct email failed → ${to}: ${directErr.message}`);
   }
@@ -87,10 +89,15 @@ async function deliverNotificationEmail({
     const queued = await enqueueEmail('notification', payload);
     if (queued) {
       logger.info(`Notification email queued (fallback) → ${to}`);
+      return { queued: true };
     }
+    logger.warn(
+      `Notification email not delivered to ${to} — queue unavailable and direct send failed`
+    );
   } catch (err) {
     logger.warn(`Notification email queue failed → ${to}: ${err.message}`);
   }
+  return null;
 }
 
 /** Members/Admins never see Superadmin system events in their inbox. */

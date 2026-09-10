@@ -26,6 +26,12 @@ async function start() {
   const emailCheck = await verifyEmailConnection();
   if (emailCheck.ok) {
     logger.info(`Email ready via ${emailCheck.provider || getActiveEmailProvider()} (${emailCheck.reason})`);
+    if (emailCheck.domainVerified === false || emailCheck.canDeliverToAnyRecipient === false) {
+      logger.warn(
+        'Assignment emails to invited members will NOT arrive until bicomworkspace.com is verified on Resend ' +
+          '(https://resend.com/domains) or BREVO_API_KEY is set. In-app notifications still work.'
+      );
+    }
   } else {
     logger.warn(`Email not ready: ${emailCheck.reason}`);
     logger.warn(

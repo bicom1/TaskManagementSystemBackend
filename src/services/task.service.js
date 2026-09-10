@@ -12,6 +12,8 @@ const { resolveAutoStatus, nextInFlow } = require('./taskProgression.util');
 const { TASK_STATUS, MAX_TASK_ASSIGNEES } = require('../constants/task.constant');
 const { emitTaskEvent } = require('../socket/socket');
 const { notifySuperAdmins } = require('./notifySuperAdmins.util');
+const { emailPath } = require('../utils/clientUrl.util');
+const { publicActorLabel } = require('../utils/publicActor.util');
 
 async function loadProjectScoped(projectId) {
   return projectRepository.findById(projectId, {
@@ -571,25 +573,34 @@ class TaskService {
 
     const userRepository = require('../repositories/user.repository');
     const actorUser = await userRepository.findById(actorId);
-    const actorName = actorUser?.name || 'A teammate';
+    const actorName = publicActorLabel(actorUser);
     const title = task.title || 'Untitled';
 
     await Promise.all(
       assigneeIds
         .filter((assigneeId) => assigneeId !== actorKey)
-        .map((assigneeId) =>
-          notificationService.notify({
-            recipient: assigneeId,
-            sender: actorId,
-            type: NOTIFICATION_TYPES.TASK_ASSIGNED,
-            message: `${actorName} assigned you the task "${title}"`,
-            entityType: 'Task',
-            entityId: task._id,
-            emailToo: true,
-            metadata: { projectId },
-            emailSubject: `${actorName} assigned you a task — ${title}`,
-          })
-        )
+        .map(async (assigneeId) => {
+          try {
+            await notificationService.notify({
+              recipient: assigneeId,
+              sender: actorId,
+              type: NOTIFICATION_TYPES.TASK_ASSIGNED,
+              message: `${actorName} assigned you the task "${title}"`,
+              entityType: 'Task',
+              entityId: task._id,
+              emailToo: true,
+              metadata: { projectId },
+              actionUrl: projectId
+                ? emailPath(`/projects/${projectId}?view=list&task=${task._id}`)
+                : emailPath(`/all-tasks?task=${task._id}`),
+              emailSubject: `${actorName} assigned you a task — ${title}`,
+            });
+          } catch (err) {
+            // Keep other assignees notified even if one fails
+            const logger = require('../config/logger');
+            logger.warn(`Task assign notify failed for ${assigneeId}: ${err.message}`);
+          }
+        })
     );
   }
 }

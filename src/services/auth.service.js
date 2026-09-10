@@ -632,12 +632,13 @@ class AuthService {
     await userRepository.incrementTokenVersion(userId);
   }
 
-  createOAuthState(clientUrl, { loginHint, inviteToken } = {}) {
+  createOAuthState(clientUrl, { loginHint, inviteToken, returnTo } = {}) {
     const data = {
       n: crypto.randomBytes(16).toString('hex'),
       c: clientUrl || null,
       h: loginHint ? String(loginHint).trim().toLowerCase() : null,
       i: inviteToken ? String(inviteToken).trim() : null,
+      r: returnTo ? String(returnTo).trim().slice(0, 512) : null,
       t: Date.now(),
     };
     const payload = JSON.stringify(data);
@@ -657,6 +658,7 @@ class AuthService {
         clientUrl: data.c,
         loginHint: data.h || null,
         inviteToken: data.i || null,
+        returnTo: data.r || null,
       };
     } catch {
       return null;

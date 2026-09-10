@@ -91,7 +91,8 @@ function loginRedirect(
   errorCode,
   clientBase,
   user = null,
-  inviteToken = null
+  inviteToken = null,
+  returnTo = null
 ) {
   const base = resolveOAuthClientUrl(clientBase);
   if (errorCode) {
@@ -99,10 +100,18 @@ function loginRedirect(
     if (invitePath) {
       return res.redirect(`${base}${invitePath}`);
     }
-    return res.redirect(`${base}/login?googleError=${encodeURIComponent(errorCode)}`);
+    const loginUrl = new URL(`${base}/login`);
+    loginUrl.searchParams.set('googleError', String(errorCode));
+    if (returnTo && String(returnTo).startsWith('/')) {
+      loginUrl.searchParams.set('next', String(returnTo));
+    }
+    return res.redirect(loginUrl.toString());
   }
   const url = new URL(`${base}/auth/google/callback`);
   url.searchParams.set('accessToken', accessToken);
+  if (returnTo && String(returnTo).startsWith('/')) {
+    url.searchParams.set('next', String(returnTo));
+  }
   if (user) {
     const profile = Buffer.from(
       JSON.stringify({
@@ -243,9 +252,17 @@ async function googleStart(req, res) {
     }
   }
 
+  const returnTo = (() => {
+    const raw = String(req.query.next || req.query.returnTo || '').trim();
+    if (!raw.startsWith('/') || raw.startsWith('//')) return null;
+    if (raw.startsWith('/login') || raw.startsWith('/auth/')) return null;
+    return raw.slice(0, 512);
+  })();
+
   const state = authService.createOAuthState(clientUrl, {
     loginHint: loginHint || null,
     inviteToken,
+    returnTo,
   });
 
   res.cookie(GOOGLE_STATE_COOKIE, state, {
@@ -299,14 +316,16 @@ async function googleCallback(req, res) {
     if (error) {
       const savedClientUrl = req.cookies[GOOGLE_CLIENT_URL_COOKIE];
       let inviteToken = cookieInvite;
+      let returnTo = null;
       try {
         const verified = authService.verifyOAuthState(state);
         inviteToken = sanitizeInviteToken(verified?.inviteToken) || cookieInvite;
+        returnTo = verified?.returnTo || null;
       } catch {
         /* ignore */
       }
       clearGoogleOAuthCookies(res);
-      return loginRedirect(res, null, String(error), savedClientUrl, null, inviteToken);
+      return loginRedirect(res, null, String(error), savedClientUrl, null, inviteToken, returnTo);
     }
 
     const verifiedState = authService.verifyOAuthState(state);
@@ -314,10 +333,19 @@ async function googleCallback(req, res) {
       verifiedState?.clientUrl || req.cookies[GOOGLE_CLIENT_URL_COOKIE];
     const inviteToken =
       sanitizeInviteToken(verifiedState?.inviteToken) || cookieInvite;
+    const returnTo = verifiedState?.returnTo || null;
     clearGoogleOAuthCookies(res);
 
     if (!code || !verifiedState) {
-      return loginRedirect(res, null, 'invalid_state', savedClientUrl, null, inviteToken);
+      return loginRedirect(
+        res,
+        null,
+        'invalid_state',
+        savedClientUrl,
+        null,
+        inviteToken,
+        returnTo
+      );
     }
 
     const auth = await authService.googleAuthWithCode(String(code), {
@@ -325,19 +353,29 @@ async function googleCallback(req, res) {
       inviteToken: inviteToken || undefined,
     });
     setRefreshCookie(res, auth.refreshToken);
-    return loginRedirect(res, auth.accessToken, null, savedClientUrl, auth.user);
+    return loginRedirect(
+      res,
+      auth.accessToken,
+      null,
+      savedClientUrl,
+      auth.user,
+      null,
+      returnTo
+    );
   } catch (err) {
     const message = resolveGoogleErrorCode(err);
     const savedClientUrl = req.cookies[GOOGLE_CLIENT_URL_COOKIE];
     let inviteToken = cookieInvite;
+    let returnTo = null;
     try {
       const verifiedState = authService.verifyOAuthState(req.query.state);
       inviteToken = sanitizeInviteToken(verifiedState?.inviteToken) || cookieInvite;
+      returnTo = verifiedState?.returnTo || null;
     } catch {
       /* ignore */
     }
     clearGoogleOAuthCookies(res);
-    return loginRedirect(res, null, message, savedClientUrl, null, inviteToken);
+    return loginRedirect(res, null, message, savedClientUrl, null, inviteToken, returnTo);
   }
 }
 

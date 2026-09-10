@@ -18,6 +18,7 @@ const {
   normalizeRole,
 } = require('../constants/roles.constant');
 const { PERMISSIONS, getInvitableRoles } = require('../constants/permissions.constant');
+const { publicActorLabel } = require('../utils/publicActor.util');
 const { NOTIFICATION_TYPES } = require('../constants/notification.constant');
 const { notifySuperAdmins } = require('./notifySuperAdmins.util');
 const { sendMail } = require('../emails/mailer.util');
@@ -487,10 +488,11 @@ class UserService {
     const clientBase = getEmailAppUrl();
     const acceptUrl = `${clientBase}/accept-invite?token=${inviteRaw}`;
     const loginUrl = `${clientBase}/login`;
+    const inviterLabel = publicActorLabel(inviter, 'BIWORKSPACE');
     const emailPayload = {
       to: normalizedEmail,
       recipientName: displayName,
-      inviterName: inviter?.name || 'A teammate',
+      inviterName: inviterLabel,
       loginUrl,
       acceptUrl,
       emailTo: normalizedEmail,
@@ -504,13 +506,13 @@ class UserService {
 
     const mailPayload = {
       to: normalizedEmail,
-      subject: `${inviter?.name || 'BIWORKSPACE'} invited you to BIWORKSPACE`,
+      subject: `You're invited to BIWORKSPACE`,
       html: inviteEmail(emailPayload),
       text: [
         `You're invited to BIWORKSPACE`,
         ``,
         `Hi ${displayName},`,
-        `${inviter?.name || 'A teammate'} invited you to join BIWORKSPACE as ${getInviteRoleLabel(departmentDoc?.code, role)}.`,
+        `${inviterLabel} invited you to join BIWORKSPACE as ${getInviteRoleLabel(departmentDoc?.code, role)}.`,
         ``,
         `Accept invite & sign in with Google: ${acceptUrl}`,
         `Or go to login and choose Continue with Google: ${loginUrl}`,

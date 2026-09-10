@@ -12,6 +12,7 @@ const {
   NOTIFICATION_TYPES,
 } = require('../constants/notification.constant');
 const { ROLES, normalizeRole } = require('../constants/roles.constant');
+const { publicActorLabel, isSuperAdminUser } = require('../utils/publicActor.util');
 
 /** Only these in-app events may also send email (invites use sendMail directly). */
 const EMAIL_ALLOWED_TYPES = new Set([
@@ -25,12 +26,17 @@ function buildActionUrl({ entityType, entityId, metadata = {} }) {
   const base = getEmailAppUrl();
   let path = '';
   if (entityType === 'Project' && entityId) {
-    path = `/projects/${entityId}`;
+    path = `/projects/${entityId}?view=list`;
   } else if (entityType === 'Task' && entityId) {
-    const projectId = metadata.projectId;
-    path = projectId ? `/projects/${projectId}?task=${entityId}` : '/all-tasks';
+    const projectId = metadata.projectId ? String(metadata.projectId) : '';
+    path = projectId
+      ? `/projects/${projectId}?view=list&task=${entityId}`
+      : `/all-tasks?task=${entityId}`;
   } else if (entityType === 'Comment' && metadata.projectId) {
-    path = `/projects/${metadata.projectId}`;
+    const taskId = metadata.taskId ? String(metadata.taskId) : '';
+    path = taskId
+      ? `/projects/${metadata.projectId}?view=list&task=${taskId}`
+      : `/projects/${metadata.projectId}?view=list`;
   } else if (entityType === 'Meeting') {
     path = '/home/meetings';
   } else if (entityType === 'User') {
@@ -40,13 +46,28 @@ function buildActionUrl({ entityType, entityId, metadata = {} }) {
   return ensureLiveEmailUrl(`${base}${path}`);
 }
 
-async function deliverNotificationEmail({ to, recipientName, message, actionUrl, subject }) {
+function actionLabelFor({ entityType, metadata = {} }) {
+  if (entityType === 'Task') return 'Open task';
+  if (entityType === 'Project') return 'Open project';
+  if (metadata.actionLabel) return String(metadata.actionLabel);
+  return 'Open in BIWORKSPACE';
+}
+
+async function deliverNotificationEmail({
+  to,
+  recipientName,
+  message,
+  actionUrl,
+  subject,
+  actionLabel,
+}) {
   const liveUrl = ensureLiveEmailUrl(actionUrl);
   const payload = {
     to,
     recipientName,
     message,
     actionUrl: liveUrl,
+    actionLabel: actionLabel || 'Open in BIWORKSPACE',
     subject: subject || 'You have a new update — BIWORKSPACE',
   };
 
@@ -139,31 +160,72 @@ class NotificationService {
     if (emailToo && EMAIL_ALLOWED_TYPES.has(type)) {
       try {
         const user = await userRepository.findById(recipient);
-        if (user?.email) {
+        const recipientEmail = String(user?.email || '')
+          .trim()
+          .toLowerCase();
+        // Mail must go only to the assigned user — never sender, never soft-deleted aliases
+        const isDeletedAlias = recipientEmail.startsWith('deleted_');
+        const isSenderSelf =
+          sender && String(recipient) === String(sender) && type !== NOTIFICATION_TYPES.TASK_CREATED;
+
+        if (
+          recipientEmail &&
+          !isDeletedAlias &&
+          !isSenderSelf &&
+          user?.isActive !== false
+        ) {
           let emailMessage = message;
-          // Prefer sender's display name in the email body when available
           try {
             if (sender && !/assigned you/i.test(String(message || ''))) {
               const senderUser = await userRepository.findById(sender);
-              if (senderUser?.name) {
-                emailMessage = `${senderUser.name}: ${message}`;
+              if (senderUser && !isSuperAdminUser(senderUser)) {
+                const label = publicActorLabel(senderUser);
+                if (label) {
+                  emailMessage = `${label}: ${message}`;
+                }
+              } else if (isSuperAdminUser(senderUser)) {
+                const saName = String(senderUser.name || '').trim();
+                if (saName) {
+                  emailMessage = String(message || '').replace(
+                    new RegExp(saName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'),
+                    'A workspace admin'
+                  );
+                }
               }
             }
           } catch {
             /* keep original message */
           }
+          emailMessage = String(emailMessage || '')
+            .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '')
+            .replace(/\s{2,}/g, ' ')
+            .trim();
+
           const resolvedActionUrl =
             actionUrl || buildActionUrl({ entityType, entityId, metadata });
+
+          logger.info(
+            `Assignment/update email → recipient=${recipientEmail} type=${type} entity=${entityType || '-'}`
+          );
+
           await deliverNotificationEmail({
-            to: user.email,
+            to: recipientEmail,
             recipientName: user.name,
             message: emailMessage,
             actionUrl: resolvedActionUrl,
             subject: emailSubject,
+            actionLabel: actionLabelFor({ entityType, metadata }),
           });
+        } else if (emailToo) {
+          logger.warn(
+            `Skipped assignment email for user=${recipient} type=${type} ` +
+              `(email=${recipientEmail || 'none'}, active=${user?.isActive !== false}, self=${Boolean(isSenderSelf)})`
+          );
         }
-      } catch {
-        // Email delivery failed — notification itself already succeeded
+      } catch (err) {
+        logger.warn(
+          `Notification email failed for recipient=${recipient} type=${type}: ${err.message}`
+        );
       }
     }
 

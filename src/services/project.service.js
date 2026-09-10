@@ -14,6 +14,8 @@ const Conversation = require('../models/conversation.model');
 const notificationService = require('./notification.service');
 const { NOTIFICATION_TYPES } = require('../constants/notification.constant');
 const { notifySuperAdmins } = require('./notifySuperAdmins.util');
+const { emailPath } = require('../utils/clientUrl.util');
+const { publicActorLabel } = require('../utils/publicActor.util');
 
 async function resolveActor(actor) {
   if (actor?.context) return actor.context;
@@ -161,6 +163,30 @@ class ProjectService {
       projectName: payload.name,
     });
 
+    // Explicitly email the assigned developer (in case they were only set on developer field)
+    const developerId = String(payload.developer || '');
+    if (developerId && developerId !== String(actor.id)) {
+      const alreadyMember = (payload.members || []).map(String).includes(developerId);
+      if (!alreadyMember) {
+        const userRepository = require('../repositories/user.repository');
+        const actorUser = await userRepository.findById(actor.id);
+        const actorName = publicActorLabel(actorUser);
+        await notificationService
+          .notify({
+            recipient: developerId,
+            sender: actor.id,
+            type: NOTIFICATION_TYPES.PROJECT_MEMBER_ADDED,
+            message: `${actorName} assigned you to the project "${payload.name}"`,
+            entityType: 'Project',
+            entityId: project._id,
+            emailToo: true,
+            actionUrl: emailPath(`/projects/${project._id}?view=list`),
+            emailSubject: `${actorName} assigned you a project — ${payload.name}`,
+          })
+          .catch(() => {});
+      }
+    }
+
     await notifySuperAdmins({
       actorId: actor.id,
       type: NOTIFICATION_TYPES.PROJECT_CREATED,
@@ -273,6 +299,11 @@ class ProjectService {
       if (!updates.clickApps) updates.clickApps = [...template.clickApps];
     }
 
+    const previousDeveloper = String(existing.developer?._id || existing.developer || '');
+    const previousMembers = new Set(
+      (existing.members || []).map((m) => String(m._id || m)).filter(Boolean)
+    );
+
     const project = await projectRepository.updateById(id, updates);
     if (!project) throw ApiError.notFound('Project not found');
     await invalidateByPrefix(`project:${id}`);
@@ -282,6 +313,54 @@ class ProjectService {
       ownerId: project.owner,
       memberIds: project.members,
     });
+
+    // Email only newly assigned people (developer / members) — not the actor
+    const actorKey = String(actor.id);
+    const nextDeveloper = String(project.developer?._id || project.developer || '');
+    if (nextDeveloper && nextDeveloper !== previousDeveloper && nextDeveloper !== actorKey) {
+      const actorUser = await require('../repositories/user.repository').findById(actor.id);
+      const actorName = publicActorLabel(actorUser);
+      await notificationService
+        .notify({
+          recipient: nextDeveloper,
+          sender: actor.id,
+          type: NOTIFICATION_TYPES.PROJECT_MEMBER_ADDED,
+          message: `${actorName} assigned you to the project "${project.name}"`,
+          entityType: 'Project',
+          entityId: project._id,
+          emailToo: true,
+          actionUrl: emailPath(`/projects/${project._id}?view=list`),
+          emailSubject: `${actorName} assigned you a project — ${project.name}`,
+        })
+        .catch(() => {});
+    }
+
+    if (Array.isArray(updates.members)) {
+      const newlyAdded = updates.members
+        .map((m) => String(m._id || m))
+        .filter((mid) => mid && !previousMembers.has(mid) && mid !== actorKey);
+      if (newlyAdded.length) {
+        const actorUser = await require('../repositories/user.repository').findById(actor.id);
+        const actorName = publicActorLabel(actorUser);
+        await Promise.all(
+          newlyAdded.map((userId) =>
+            notificationService
+              .notify({
+                recipient: userId,
+                sender: actor.id,
+                type: NOTIFICATION_TYPES.PROJECT_MEMBER_ADDED,
+                message: `${actorName} assigned you to the project "${project.name}"`,
+                entityType: 'Project',
+                entityId: project._id,
+                emailToo: true,
+                actionUrl: emailPath(`/projects/${project._id}?view=list`),
+                emailSubject: `${actorName} assigned you a project — ${project.name}`,
+              })
+              .catch(() => {})
+          )
+        );
+      }
+    }
 
     await notifySuperAdmins({
       actorId: actor.id,
@@ -322,7 +401,7 @@ class ProjectService {
     if (String(userId) !== String(actor.id)) {
       const userRepository = require('../repositories/user.repository');
       const actorUser = await userRepository.findById(actor.id);
-      const actorName = actorUser?.name || 'A teammate';
+      const actorName = publicActorLabel(actorUser);
       await notificationService
         .notify({
           recipient: userId,
@@ -332,6 +411,7 @@ class ProjectService {
           entityType: 'Project',
           entityId: projectId,
           emailToo: true,
+          actionUrl: emailPath(`/projects/${projectId}?view=list`),
           emailSubject: `${actorName} assigned you a project — ${existing.name}`,
         })
         .catch(() => {});
@@ -389,7 +469,7 @@ class ProjectService {
 
     const userRepository = require('../repositories/user.repository');
     const actorUser = await userRepository.findById(actorId);
-    const actorName = actorUser?.name || 'A teammate';
+    const actorName = publicActorLabel(actorUser);
     const name = projectName || project.name || 'a project';
     const body =
       message || `${actorName} assigned you to the project "${name}"`;
@@ -409,6 +489,7 @@ class ProjectService {
               entityType: 'Project',
               entityId: project._id,
               emailToo: true,
+              actionUrl: emailPath(`/projects/${project._id}?view=list`),
               emailSubject: subject,
             })
             .catch(() => {})

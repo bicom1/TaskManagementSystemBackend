@@ -20,6 +20,25 @@ const RESEND_TEST_FROM = 'BIWORKSPACE <onboarding@resend.dev>';
 const PRIMARY_SEND_DOMAIN = 'bicomworkspace.com';
 const PRIMARY_FROM_EMAIL = `noreply@${PRIMARY_SEND_DOMAIN}`;
 
+/**
+ * Only allow Reply-To on official BIWORKSPACE domains.
+ * Never surface a Super Admin personal mailbox (Gmail, etc.) to recipients.
+ */
+function sanitizeReplyTo(replyTo) {
+  const raw = cleanSecret(replyTo);
+  if (!raw) return null;
+  const match = String(raw).match(/<([^>]+)>/);
+  const email = String(match ? match[1] : raw)
+    .trim()
+    .toLowerCase();
+  if (!email.includes('@')) return null;
+  const domain = email.split('@')[1] || '';
+  if (domain === PRIMARY_SEND_DOMAIN || domain === 'resend.dev') {
+    return email;
+  }
+  return null;
+}
+
 function cleanSecret(value) {
   if (value == null) return value;
   let s = String(value).trim();
@@ -282,8 +301,9 @@ async function sendViaResend({ to, subject, html, text, replyTo }, { allowRetryW
     html,
     text: plainTextFromHtml(html, text),
   };
-  const smtpUser = cleanSecret(env.SMTP_USER);
-  if (replyTo || smtpUser) payload.reply_to = replyTo || smtpUser;
+  // Only allow official-domain Reply-To — never a personal Super Admin mailbox
+  const safeReply = sanitizeReplyTo(replyTo);
+  if (safeReply) payload.reply_to = safeReply;
 
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
@@ -375,7 +395,10 @@ async function sendViaBrevo({ to, subject, html, text, replyTo }) {
     htmlContent: html,
     textContent: plainTextFromHtml(html, text),
   };
-  if (replyTo) payload.replyTo = { email: replyTo };
+  if (replyTo) {
+    const safeReply = sanitizeReplyTo(replyTo);
+    if (safeReply) payload.replyTo = { email: safeReply };
+  }
 
   const res = await fetch('https://api.brevo.com/v3/smtp/email', {
     method: 'POST',
@@ -410,12 +433,11 @@ async function sendViaSmtp({ to, subject, html, text, replyTo }) {
 
   const result = await tx.sendMail({
     from,
-    sender: smtpUser || undefined,
     to,
     subject,
     html,
     text: plainTextFromHtml(html, text),
-    replyTo: replyTo || smtpUser || undefined,
+    replyTo: sanitizeReplyTo(replyTo) || undefined,
     envelope: {
       from: smtpUser || fromInfo.email,
       to: [to],

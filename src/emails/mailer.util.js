@@ -268,7 +268,7 @@ async function resolveResendFrom(apiKey) {
   };
 }
 
-async function sendViaResend({ to, subject, html, text, replyTo }, { allowRedirect = true } = {}) {
+async function sendViaResend({ to, subject, html, text, replyTo }, { allowRetryWithTestFrom = true } = {}) {
   const apiKey = cleanSecret(env.RESEND_API_KEY);
   if (!apiKey) throw new Error('RESEND_API_KEY is not set');
 
@@ -297,48 +297,30 @@ async function sendViaResend({ to, subject, html, text, replyTo }, { allowRedire
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
     const message = body?.message || body?.error || `Resend HTTP ${res.status}`;
-    const match = String(message).match(
-      /only send testing emails to your own email address \(([^)]+)\)/i
+    const isTestRecipientOnly = /only send testing emails to your own email address/i.test(
+      String(message)
     );
 
-    // Domain rejection while still using a custom From → should not happen often;
-    // resolveResendFrom already switches to onboarding@resend.dev when unverified.
+    // Custom From rejected → retry once with Resend's test sender (still to the SAME recipient).
     if (
-      allowRedirect &&
+      allowRetryWithTestFrom &&
       /domain is not verified|invalid.*from|not verified/i.test(message) &&
       !/onboarding@resend\.dev/i.test(String(payload.from))
     ) {
       logger.warn(`Resend from rejected (${message}) — forcing onboarding@resend.dev`);
       resendDomainCache = { at: Date.now(), verified: new Set() };
-      return sendViaResend({ to, subject, html, text, replyTo }, { allowRedirect: true });
+      return sendViaResend(
+        { to, subject, html, text, replyTo },
+        { allowRetryWithTestFrom: false }
+      );
     }
 
-    // Unverified Resend accounts can only deliver to the account inbox —
-    // still send the clean professional invite (no test-mode banner in the email).
-    if (!usingVerifiedDomain && allowRedirect && match?.[1]) {
-      const allowedInbox = String(match[1]).trim().toLowerCase();
-      const intended = String(to).trim().toLowerCase();
-      if (allowedInbox && intended !== allowedInbox) {
-        logger.warn(
-          `Resend cannot deliver to ${intended} until ${PRIMARY_SEND_DOMAIN} is verified — sending invite to ${allowedInbox}`
-        );
-        const redirected = await sendViaResend(
-          {
-            to: allowedInbox,
-            subject,
-            html,
-            text: plainTextFromHtml(html, text),
-            replyTo,
-          },
-          { allowRedirect: false }
-        );
-        return {
-          ...redirected,
-          intendedTo: intended,
-          emailRedirectedTo: allowedInbox,
-          redirected: true,
-        };
-      }
+    // Never redirect invites to the Resend account owner. Invites must reach `to`.
+    if (isTestRecipientOnly) {
+      throw new Error(
+        `Resend cannot deliver to ${to} until ${PRIMARY_SEND_DOMAIN} is verified. ` +
+          `Verify the domain at https://resend.com/domains (or set BREVO_API_KEY as fallback).`
+      );
     }
 
     throw new Error(message);
@@ -353,7 +335,9 @@ async function sendViaResend({ to, subject, html, text, replyTo }, { allowRedire
     provider: 'resend',
     intendedTo: to,
     redirected: false,
+    emailRedirectedTo: null,
     deliveryTo: to,
+    deliveryStatus: usingVerifiedDomain ? 'sent' : 'sent_via_resend_test_from',
   };
 }
 
@@ -466,7 +450,7 @@ async function sendMail({ to, subject, html, text, replyTo }) {
   if (!to) throw new Error('Missing email recipient');
 
   const recipient = String(to).trim().toLowerCase();
-  const provider = resolveEmailProvider();
+  let provider = resolveEmailProvider();
   activeProvider = provider;
 
   if (provider === 'none') {
@@ -476,6 +460,22 @@ async function sendMail({ to, subject, html, text, replyTo }) {
         ? 'Email not configured on Render. Set RESEND_API_KEY and EMAIL_PROVIDER=resend (SMTP to mail.bicomworkspace.com does not work on Render).'
         : 'No email provider configured. Set RESEND_API_KEY (recommended), BREVO_API_KEY, or SMTP_* in backend/.env'
     );
+  }
+
+  // Prefer Brevo when Resend domain is unverified so invites reach the invitee.
+  if (provider === 'resend' && cleanSecret(env.BREVO_API_KEY)) {
+    try {
+      const verified = await listVerifiedResendDomains(cleanSecret(env.RESEND_API_KEY));
+      if (!verified.has(PRIMARY_SEND_DOMAIN)) {
+        logger.warn(
+          `Resend ${PRIMARY_SEND_DOMAIN} not verified — using Brevo so invite reaches ${recipient}`
+        );
+        provider = 'brevo';
+        activeProvider = 'brevo';
+      }
+    } catch {
+      /* keep Resend */
+    }
   }
 
   try {
@@ -492,32 +492,101 @@ async function sendMail({ to, subject, html, text, replyTo }) {
       throw new Error('Email provider only logged locally — configure RESEND_API_KEY or SMTP');
     }
 
+    if (result?.redirected || result?.emailRedirectedTo) {
+      throw new Error(
+        `Invite must go to ${recipient}, but the provider redirected delivery. ` +
+          `Verify ${PRIMARY_SEND_DOMAIN} at https://resend.com/domains`
+      );
+    }
+
     lastSmtpError = null;
     logger.info(
       `Email sent via ${result.provider} to ${recipient}: "${subject}" id=${result.messageId}`
     );
-    return result;
+    return {
+      ...result,
+      intendedTo: recipient,
+      deliveryTo: recipient,
+      emailRedirectedTo: null,
+      redirected: false,
+    };
   } catch (err) {
     lastSmtpError = err.message;
 
-    const isResendRecipientLimit = /only send testing emails to your own email/i.test(err.message);
+    const isResendRecipientLimit =
+      /only send testing emails to your own email|cannot deliver to .+ until .+ is verified/i.test(
+        err.message || ''
+      );
     const forcedResend = String(env.EMAIL_PROVIDER || '').toLowerCase() === 'resend';
     const dnsFail = /EAI_AGAIN|ENOTFOUND|getaddrinfo/i.test(err.message || '');
 
-    // Never fall back to SMTP on Render — causes getaddrinfo EAI_AGAIN on mail.bicomworkspace.com
+    if (isResendRecipientLimit && cleanSecret(env.BREVO_API_KEY) && provider !== 'brevo') {
+      try {
+        logger.warn(`Falling back to Brevo for invite to ${recipient}`);
+        activeProvider = 'brevo';
+        const brevoResult = await sendViaBrevo({
+          to: recipient,
+          subject,
+          html,
+          text,
+          replyTo,
+        });
+        lastSmtpError = null;
+        return {
+          ...brevoResult,
+          intendedTo: recipient,
+          deliveryTo: recipient,
+          emailRedirectedTo: null,
+          redirected: false,
+        };
+      } catch (brevoErr) {
+        lastSmtpError = brevoErr.message;
+        logger.error(`Brevo fallback failed for ${recipient}: ${brevoErr.message}`);
+      }
+    }
+
+    if (
+      isResendRecipientLimit &&
+      !isRenderHost() &&
+      isSmtpReady() &&
+      smtpAllowed()
+    ) {
+      try {
+        logger.warn(`Falling back to SMTP for invite to ${recipient}`);
+        activeProvider = 'smtp';
+        const smtpResult = await sendViaSmtp({
+          to: recipient,
+          subject,
+          html,
+          text,
+          replyTo,
+        });
+        lastSmtpError = null;
+        return {
+          ...smtpResult,
+          intendedTo: recipient,
+          deliveryTo: recipient,
+          emailRedirectedTo: null,
+          redirected: false,
+        };
+      } catch (smtpErr) {
+        lastSmtpError = smtpErr.message;
+      }
+    }
+
     if (forcedResend || isResendRecipientLimit || isRenderHost()) {
       resetTransporter();
       if (isResendRecipientLimit) {
         throw new Error(
-          'Resend can only email your account address until you verify a domain. ' +
-            'Go to https://resend.com/domains , add bicomworkspace.com, then set ' +
-            'EMAIL_FROM="BIWORKSPACE <noreply@bicomworkspace.com>" so invites reach any user.'
+          `Invite email could not be delivered to ${recipient}. ` +
+            `Verify ${PRIMARY_SEND_DOMAIN} at https://resend.com/domains ` +
+            `(or set BREVO_API_KEY). Share the invite link until email delivery works.`
         );
       }
       if (dnsFail && /mail\.|smtp/i.test(err.message || '')) {
         throw new Error(
           'SMTP DNS failed on this host (Render cannot reach mail.bicomworkspace.com). ' +
-            'Set RESEND_API_KEY + EMAIL_PROVIDER=resend on Render, then redeploy.'
+            'Use RESEND_API_KEY with a verified bicomworkspace.com domain, or BREVO_API_KEY.'
         );
       }
       throw err;
@@ -531,11 +600,19 @@ async function sendMail({ to, subject, html, text, replyTo }) {
         logger.info(
           `Email sent via smtp fallback to ${recipient}: "${subject}" id=${fallback.messageId}`
         );
-        return fallback;
+        return {
+          ...fallback,
+          intendedTo: recipient,
+          deliveryTo: recipient,
+          emailRedirectedTo: null,
+          redirected: false,
+        };
       } catch (smtpErr) {
         lastSmtpError = smtpErr.message;
         resetTransporter();
-        throw new Error(`${provider} failed: ${err.message}; SMTP fallback failed: ${smtpErr.message}`);
+        throw new Error(
+          `${provider} failed: ${err.message}; SMTP fallback failed: ${smtpErr.message}`
+        );
       }
     }
     resetTransporter();

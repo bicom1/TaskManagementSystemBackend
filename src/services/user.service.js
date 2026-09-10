@@ -533,13 +533,22 @@ class UserService {
           setTimeout(() => reject(new Error('Email send timed out after 12s')), 12_000)
         ),
       ]);
-      emailDelivered = Boolean(mailResult && !mailResult.logged);
+      emailDelivered = Boolean(
+        mailResult &&
+          !mailResult.logged &&
+          !mailResult.redirected &&
+          !mailResult.emailRedirectedTo
+      );
       via = mailResult?.provider || 'unknown';
       emailRedirectedTo = mailResult?.emailRedirectedTo || mailResult?.redirectedTo || null;
       if (mailResult?.from) emailFrom = mailResult.from;
       if (mailResult?.logged) {
         emailError = 'Email provider is not configured on this server';
         emailDelivered = false;
+      }
+      if (emailRedirectedTo) {
+        emailDelivered = false;
+        emailError = `Provider would not send to ${normalizedEmail}`;
       }
     } catch (err) {
       emailError = err.message || 'Email delivery failed';
@@ -552,9 +561,9 @@ class UserService {
 
     const emailNote = emailDelivered
       ? isReinvite
-        ? 'Invitation email re-sent. Ask them to check inbox and spam.'
-        : 'Invitation email sent. Ask them to check inbox and spam.'
-      : `Invite created, but the email was not delivered${emailError ? ` (${emailError})` : ''}. Share the invite link below.`;
+        ? `Invitation email re-sent to ${normalizedEmail}. Ask them to check inbox and spam.`
+        : `Invitation email sent to ${normalizedEmail}. Ask them to check inbox and spam.`
+      : `Invite created for ${normalizedEmail}, but the email was not delivered${emailError ? ` (${emailError})` : ''}. Share the invite link below.`;
 
 
     await notificationService

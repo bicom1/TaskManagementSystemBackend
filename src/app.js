@@ -88,7 +88,7 @@ app.get('/health', (req, res) =>
     status: 'ok',
     uptime: process.uptime(),
     // Bump when deploying so you can confirm Render picked up this build
-    version: 'chat-delete-groups-2026-09-09',
+    version: 'invite-to-recipient-2026-09-10',
     clientUrl: getClientBaseUrl(),
     emailAppUrl: getEmailAppUrl(),
     email: {

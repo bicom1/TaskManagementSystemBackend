@@ -5,6 +5,13 @@ const LOCALHOST_RE = /localhost|127\.0\.0\.1|^https?:\/\/loc(:|\/|$)/i;
 /** Live frontend — always used for email buttons on production / Resend */
 const PRODUCTION_APP_FALLBACK = 'https://task-management-system-frontend-z23.vercel.app';
 
+/**
+ * Custom production domain on cPanel. Accepted regardless of CLIENT_URL so a
+ * missing or mistyped env var on the API host cannot CORS-block the whole app.
+ * The .htaccess redirects www to the apex, but both are allowed defensively.
+ */
+const CUSTOM_DOMAIN_ORIGINS = ['https://bicomworkspace.com', 'https://www.bicomworkspace.com'];
+
 function normalizeUrl(url) {
   return String(url || '').trim().replace(/\/$/, '');
 }
@@ -33,6 +40,7 @@ function isAllowedClientOrigin(url) {
       normalizeUrl(env.CLIENT_URL),
       normalizeUrl(env.PUBLIC_APP_URL),
       PRODUCTION_APP_FALLBACK,
+      ...CUSTOM_DOMAIN_ORIGINS,
       'http://localhost:5173',
       'http://127.0.0.1:5173',
     ].filter(Boolean)

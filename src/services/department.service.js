@@ -3,7 +3,7 @@ const userRepository = require('../repositories/user.repository');
 const notificationService = require('./notification.service');
 const ApiError = require('../utils/ApiError.util');
 const { NOTIFICATION_TYPES } = require('../constants/notification.constant');
-const { ROLES, DEPARTMENT_PRESETS } = require('../constants/roles.constant');
+const { ROLES, DEPARTMENT_PRESETS, normalizeDepartmentCode } = require('../constants/roles.constant');
 const Department = require('../models/department.model');
 const Team = require('../models/team.model');
 
@@ -43,7 +43,41 @@ class DepartmentService {
     }
   }
 
+  /**
+   * `code` and `name` are unique across every department row — deleted ones too,
+   * since deleting only sets isActive: false. Without this, reusing a deleted
+   * department's code failed with `The code "development" is already in use`
+   * while no visible department had that code.
+   */
+  async #assertAvailable({ code, name }, excludeId) {
+    const normalizedCode = code ? normalizeDepartmentCode(code) : null;
+    const trimmedName = name ? String(name).trim() : null;
+    const or = [];
+    if (normalizedCode) or.push({ code: normalizedCode });
+    if (trimmedName) or.push({ name: trimmedName });
+    if (!or.length) return;
+
+    const clash = await Department.findOne({
+      $or: or,
+      ...(excludeId ? { _id: { $ne: excludeId } } : {}),
+    })
+      .select('name code isActive')
+      .lean();
+    if (!clash) return;
+
+    const field = normalizedCode && clash.code === normalizedCode ? 'code' : 'name';
+    const value = field === 'code' ? clash.code : clash.name;
+    if (clash.isActive === false) {
+      throw ApiError.conflict(
+        `The ${field} "${value}" belongs to a deleted department and can't be reused. ` +
+          `Pick a different ${field}.`
+      );
+    }
+    throw ApiError.conflict(`A department with the ${field} "${value}" already exists.`);
+  }
+
   async create(data, actorId) {
+    await this.#assertAvailable(data);
     const department = await departmentRepository.create(data);
 
     const superAdmins = await userRepository.findPaginated(
@@ -97,6 +131,9 @@ class DepartmentService {
   }
 
   async update(id, updates) {
+    if (updates?.code || updates?.name) {
+      await this.#assertAvailable({ code: updates.code, name: updates.name }, id);
+    }
     const department = await departmentRepository.updateById(id, updates);
     if (!department) throw ApiError.notFound('Department not found');
     return department;

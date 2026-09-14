@@ -35,9 +35,16 @@ function hashToken(raw) {
   return crypto.createHash('sha256').update(raw).digest('hex');
 }
 
+/** Invite accept links stay valid for this long after creation. */
+const INVITE_TOKEN_TTL_MINUTES = 5;
+
 function createInviteToken() {
   const raw = crypto.randomBytes(32).toString('hex');
   return { raw, hashed: hashToken(raw) };
+}
+
+function inviteExpiryDate(from = Date.now()) {
+  return new Date(from + INVITE_TOKEN_TTL_MINUTES * 60 * 1000);
 }
 
 function escapeRegex(value) {
@@ -370,7 +377,7 @@ class UserService {
       normalizedEmail.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 
     const { raw: inviteRaw, hashed: inviteHashed } = createInviteToken();
-    const inviteExpires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const inviteExpires = inviteExpiryDate();
 
     const inviter = await userRepository.findById(actor.id);
     const resolvedJobTitle =
@@ -517,6 +524,8 @@ class UserService {
         `Accept invite & sign in with Google: ${acceptUrl}`,
         `Or go to login and choose Continue with Google: ${loginUrl}`,
         `Use this Google account email: ${normalizedEmail}`,
+        ``,
+        `This invite link expires in ${INVITE_TOKEN_TTL_MINUTES} minutes.`,
       ].join('\n'),
     };
 
@@ -612,6 +621,8 @@ class UserService {
       user: fresh.toSafeObject(),
       inviteToken: inviteRaw,
       acceptUrl,
+      expiresAt: inviteExpires.toISOString(),
+      expiresInMinutes: INVITE_TOKEN_TTL_MINUTES,
       emailSent: emailDelivered,
       emailError,
       emailTo: normalizedEmail,
@@ -628,6 +639,7 @@ class UserService {
         `Accept invite & sign in with Google: ${acceptUrl}`,
         `Or login → Continue with Google: ${loginUrl}`,
         `Google email must be: ${normalizedEmail}`,
+        `This invite link expires in ${INVITE_TOKEN_TTL_MINUTES} minutes.`,
       ].join('\n'),
     };
   }
@@ -647,15 +659,19 @@ class UserService {
       inviteToken: hashed,
       inviteTokenExpires: { $gt: new Date() },
     })
-      .select('name email role jobTitle invitePending department googleId')
+      .select('name email role jobTitle invitePending department googleId inviteTokenExpires')
       .populate('department', 'name code')
       .lean();
     if (!user) throw ApiError.badRequest('Invite link is invalid or has expired');
     if (user.invitePending === false && user.googleId) {
       throw ApiError.badRequest('This invite was already accepted. Sign in with Google instead.');
     }
-    const { googleId: _g, ...safe } = user;
-    return safe;
+    const { googleId: _g, inviteTokenExpires, ...safe } = user;
+    return {
+      ...safe,
+      expiresAt: inviteTokenExpires ? new Date(inviteTokenExpires).toISOString() : null,
+      expiresInMinutes: INVITE_TOKEN_TTL_MINUTES,
+    };
   }
 
   /**

@@ -54,7 +54,7 @@ function inviteEmail({ recipientName, inviterName, loginUrl, acceptUrl, emailTo 
           </p>
           ${acceptUrl && loginUrl ? `<p style="font-size:13px;color:#64748b;">Use the button above — invited members must continue with <strong>Google</strong> (password login is not available).</p>` : ''}
           <p style="color:#94a3b8;font-size:12px;margin-top:24px;line-height:1.5;">
-            This invite expires in 7 days. Invited accounts sign in with Google only — no password is required.
+            This invite expires in <strong>5 minutes</strong>. Invited accounts sign in with Google only — no password is required.
           </p>
         </div>
         <div style="background:#f8fafc;padding:14px 24px;border-top:1px solid #e5e7eb;font-size:12px;color:#64748b;">

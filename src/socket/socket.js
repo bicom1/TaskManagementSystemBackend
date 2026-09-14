@@ -9,6 +9,30 @@ const Department = require('../models/department.model');
 const env = require('../config/env');
 const logger = require('../config/logger');
 const { ROLES } = require('../constants/roles.constant');
+
+const CHAT_OVERSIGHT_ROOM = 'chat:oversight';
+
+/** Department and team rooms for a newly connected socket. */
+async function joinMembershipRooms(socket, userId) {
+  try {
+    const user = await userRepository.findById(userId);
+    if (user?.department) {
+      socket.join(`department:${user.department}`);
+    }
+
+    const teams = await teamRepository.findPaginated(
+      {
+        $or: [{ lead: userId }, { members: userId }],
+      },
+      { page: 1, limit: 50 }
+    );
+    for (const team of teams.data || []) {
+      socket.join(`team:${team._id}`);
+    }
+  } catch (err) {
+    logger.warn(`Socket room join failed for user:${userId}: ${err.message}`);
+  }
+}
 const {
   isAllowedClientOrigin,
   PRODUCTION_APP_FALLBACK,
@@ -144,6 +168,9 @@ function initSocket(httpServer) {
   io.on('connection', async (socket) => {
     const userId = String(socket.userId);
     socket.join(`user:${userId}`);
+    // Super Admin sees every conversation, so their chat list needs updates for
+    // chats they aren't part of too.
+    if (socket.userRole === ROLES.SUPER_ADMIN) socket.join(CHAT_OVERSIGHT_ROOM);
     logger.debug(`Socket connected: user:${userId}`);
 
     const existing = presenceByUser.get(userId) || {
@@ -171,24 +198,11 @@ function initSocket(httpServer) {
     }
     socket.emit('presence:snapshot', { online: onlineSnapshot });
 
-    try {
-      const user = await userRepository.findById(userId);
-      if (user?.department) {
-        socket.join(`department:${user.department}`);
-      }
-
-      const teams = await teamRepository.findPaginated(
-        {
-          $or: [{ lead: userId }, { members: userId }],
-        },
-        { page: 1, limit: 50 }
-      );
-      for (const team of teams.data || []) {
-        socket.join(`team:${team._id}`);
-      }
-    } catch (err) {
-      logger.warn(`Socket room join failed for user:${userId}: ${err.message}`);
-    }
+    // Not awaited: every handler below must be registered before any await.
+    // socket.io drops events that arrive with no listener, so while these queries
+    // ran, a client's conversation:join / project:join sent on connect was lost —
+    // no typing indicator in an open chat, no live updates on an open board.
+    joinMembershipRooms(socket, userId);
 
     socket.on('presence:ping', () => {
       socket.emit('presence:pong', { at: Date.now() });
@@ -422,23 +436,21 @@ function emitChatMessage(message, participantIds = [], conversationId) {
     createdAt: message.createdAt,
   };
 
-  if (conversationId) {
-    io.to(`conversation:${conversationId}`).emit('chat:message', payload);
-  }
-
-  const unique = [...new Set(participantIds.map(String))];
-  for (const uid of unique) {
-    io.to(`user:${uid}`).emit('chat:message', payload);
-    io.to(`user:${uid}`).emit('message:new', { ...payload, subject: 'Chat' });
-  }
+  const userRooms = [...new Set(participantIds.map(String))].map((uid) => `user:${uid}`);
+  // One broadcast across all rooms: socket.io delivers once per socket even when
+  // it is in several of them. Emitting per room delivered every message twice.
+  const rooms = conversationId ? [`conversation:${conversationId}`, ...userRooms] : userRooms;
+  if (rooms.length) io.to(rooms).emit('chat:message', payload);
+  if (userRooms.length) io.to(userRooms).emit('message:new', { ...payload, subject: 'Chat' });
 }
 
 function emitConversationUpdated(conversation, participantIds = []) {
   if (!io) return;
-  const unique = [...new Set(participantIds.map(String))];
-  for (const uid of unique) {
-    io.to(`user:${uid}`).emit('chat:conversation', conversation);
-  }
+  const userRooms = [...new Set(participantIds.map(String))].map((uid) => `user:${uid}`);
+  io.to([...userRooms, CHAT_OVERSIGHT_ROOM]).emit('chat:conversation', {
+    ...conversation,
+    participantIds: [...new Set(participantIds.map(String))],
+  });
 }
 
 /** Live Space / project updates for sidebar + open boards */

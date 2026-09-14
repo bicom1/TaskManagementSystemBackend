@@ -595,7 +595,7 @@ class UserService {
       .record({
         actor: actor.id,
         action: 'user_invited',
-        entityType: 'Project',
+        entityType: 'User',
         entityId: user._id,
         metadata: { email: normalizedEmail, role, department: resolvedDepartment, team: resolvedTeamId },
       })
@@ -716,7 +716,7 @@ class UserService {
       .record({
         actor: actor.id,
         action: 'user_updated',
-        entityType: 'Project',
+        entityType: 'User',
         entityId: id,
         metadata: { fields: Object.keys(allowed) },
       })
@@ -841,7 +841,7 @@ class UserService {
       .record({
         actor: actorId,
         action: 'user_deleted',
-        entityType: 'Project',
+        entityType: 'User',
         entityId: userId,
         metadata: { email: originalEmail, name: displayName, hardDelete: true },
       })

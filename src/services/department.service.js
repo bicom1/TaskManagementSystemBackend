@@ -60,7 +60,7 @@ class DepartmentService {
             sender: actorId,
             type: NOTIFICATION_TYPES.DEPARTMENT_CREATED,
             message: `New department created: ${department.name}`,
-            entityType: 'Project',
+            entityType: 'Department',
             entityId: department._id,
             emailToo: true,
           })
@@ -73,7 +73,7 @@ class DepartmentService {
       sender: actorId,
       type: NOTIFICATION_TYPES.DEPARTMENT_CREATED,
       message: `Department "${department.name}" is now available`,
-      entityType: 'Project',
+      entityType: 'Department',
       entityId: department._id,
     });
 

@@ -17,7 +17,9 @@
     "smoke:collection-fixes": "node src/scripts/smoke-collection-fixes.js",
     "dedupe:users": "node src/scripts/dedupe-users.js",
     "sync:team-projects": "node src/scripts/sync-team-project-members.js",
-    "prepare": "node -e \"try{require('husky').install()}catch(e){}\""
+    "prepare": "node -e \"try{require('husky').install()}catch(e){}\"",
+    "cleanup:orphans": "node src/scripts/cleanup-orphaned-references.js",
+    "migrate:entity-types": "node src/scripts/migrate-entity-types.js"
   },
   "dependencies": {
     "@upstash/redis": "^1.38.2",

@@ -432,8 +432,17 @@ class ProjectService {
     policy.assertProjectManage(actor, existing);
 
     const Task = require('../models/task.model');
+    const {
+      cleanupTaskReferences,
+      cleanupProjectReferences,
+    } = require('./deletionCleanup.service');
+
+    // Capture the ids first — once archived, the tasks still exist but nothing
+    // that references them (notifications, personal lists, links) is valid.
+    const taskIds = (await Task.find({ project: id }).select('_id').lean()).map((t) => t._id);
     await Task.updateMany({ project: id }, { isArchived: true });
-    await Conversation.updateMany({ relatedProject: id }, { isActive: false });
+    await cleanupTaskReferences(taskIds, { deleteComments: false });
+    await cleanupProjectReferences(id);
     await projectRepository.deleteById(id);
     await invalidateByPrefix(`project:${id}`);
 

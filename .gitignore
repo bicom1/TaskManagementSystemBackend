@@ -17,6 +17,9 @@ logs/
 # Uploads
 uploads/
 
+# Data exports / migration backups — contain production data
+backups/
+
 # Coverage
 coverage/
 

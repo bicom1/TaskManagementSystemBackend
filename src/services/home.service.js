@@ -162,6 +162,8 @@ class HomeService {
       Task.countDocuments({
         assignees: uid,
         status: 'done',
+        // Tasks of a deleted project are archived, not removed — don't count them.
+        isArchived: false,
         updatedAt: { $gte: startOfToday() },
       }),
     ]);

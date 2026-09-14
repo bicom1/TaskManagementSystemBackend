@@ -37,7 +37,23 @@ const SYSTEM_ONLY_TYPES = Object.freeze([
   NOTIFICATION_TYPES.USER_DEACTIVATED,
 ]);
 
-const ENTITY_TYPES = Object.freeze(['Task', 'Project', 'Comment', 'Meeting', 'User', 'System']);
+/**
+ * What a notification or activity entry is *about*. entityType must describe the
+ * entity entityId points at — the inbox, deletion cleanup and audit log all route
+ * and match on it. Team and Department were missing, so team/department events
+ * were stored as 'Project' with a team or department id, which sent clicks to a
+ * "project not found" page and made the ids unsafe to match on.
+ */
+const ENTITY_TYPES = Object.freeze([
+  'Task',
+  'Project',
+  'Team',
+  'Department',
+  'Comment',
+  'Meeting',
+  'User',
+  'System',
+]);
 
 module.exports = {
   NOTIFICATION_TYPES,

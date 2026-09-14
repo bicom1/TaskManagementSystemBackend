@@ -495,8 +495,23 @@ class TaskService {
 
     policy.assertTaskManage(actor, existing, existing.project);
 
+    const {
+      collectTaskSubtree,
+      cleanupTaskReferences,
+    } = require('./deletionCleanup.service');
+
+    // Subtasks go with their parent; left behind they point at a task that no
+    // longer exists and surface as stray rows in the list view.
+    const subtreeIds = await collectTaskSubtree(existing._id);
+    const descendantIds = subtreeIds.filter((sid) => sid !== String(existing._id));
+
     const task = await taskRepository.deleteById(id);
     if (!task) throw ApiError.notFound('Task not found');
+    if (descendantIds.length) {
+      await Task.deleteMany({ _id: { $in: descendantIds } });
+    }
+    await cleanupTaskReferences(subtreeIds, { deleteComments: true });
+
     emitTaskEvent('task:deleted', task, existing.project?._id || existing.project);
 
     await notifySuperAdmins({

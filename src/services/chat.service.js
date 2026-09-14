@@ -122,19 +122,57 @@ class ChatService {
       (d) => String(d._id)
     );
 
-    const departmentGroups = [];
-    for (const dept of visibleDepartments) {
-      try {
-        const conv = await this.getOrCreateDepartmentChat(actorId, dept._id);
-        departmentGroups.push({
-          ...dept,
-          conversationId: conv?._id || null,
-          memberCount: (conv?.participants || []).length,
-        });
-      } catch {
-        departmentGroups.push({ ...dept, conversationId: null, memberCount: 0 });
-      }
+    // Read-only lookup. Groups are created and their rosters rebuilt only when
+    // someone opens one (getOrCreateDepartmentChat). Doing that here for every
+    // department on every inbox load was slow, and made rosters flip: a member
+    // loading the inbox rebuilt their department's list and dropped any admin who
+    // had joined, so that admin's next message was rejected.
+    const deptIds = visibleDepartments.map((d) => d._id);
+    const [deptConversations, headcounts] = await Promise.all([
+      Conversation.find({ type: 'department', department: { $in: deptIds }, isActive: true })
+        .select('department participants')
+        .sort({ createdAt: 1 })
+        .lean(),
+      User.aggregate([
+        {
+          $match: {
+            department: { $in: deptIds },
+            isActive: true,
+            invitePending: { $ne: true },
+            email: { $not: /^deleted_/i },
+          },
+        },
+        { $group: { _id: '$department', count: { $sum: 1 } } },
+      ]),
+    ]);
+    const convByDept = new Map();
+    for (const c of deptConversations) {
+      const key = String(c.department);
+      if (!convByDept.has(key)) convByDept.set(key, c);
     }
+    const headcountByDept = new Map(headcounts.map((h) => [String(h._id), h.count]));
+
+    // You always belong to your own department's group. Added, never replaced,
+    // so nobody else is removed as a side effect.
+    const ownConv = actor?.department ? convByDept.get(String(actor.department)) : null;
+    if (ownConv && !(ownConv.participants || []).some((p) => String(p) === String(actorId))) {
+      await Conversation.updateOne(
+        { _id: ownConv._id },
+        { $addToSet: { participants: actorId } }
+      );
+      ownConv.participants = [...(ownConv.participants || []), actorId];
+    }
+
+    const departmentGroups = visibleDepartments.map((dept) => {
+      const conv = convByDept.get(String(dept._id));
+      return {
+        ...dept,
+        conversationId: conv?._id || null,
+        memberCount: conv
+          ? (conv.participants || []).length
+          : headcountByDept.get(String(dept._id)) || 0,
+      };
+    });
 
     const people = await User.find({
       isActive: true,
@@ -207,6 +245,42 @@ class ChatService {
     return actor?.role === ROLES.SUPER_ADMIN;
   }
 
+  /** Of these participants, the active ones holding a manager role. */
+  async #activeManagerIds(participantIds = [], roles = [ROLES.SUPER_ADMIN, ROLES.ADMIN]) {
+    if (!participantIds?.length) return [];
+    const rows = await User.find({
+      _id: { $in: participantIds },
+      isActive: true,
+      role: { $in: roles },
+    })
+      .select('_id')
+      .lean();
+    return rows.map((u) => String(u._id));
+  }
+
+  /**
+   * Whether a non-participant may join this group by posting in it. Mirrors who
+   * may open the group (getOrCreateDepartmentChat / getOrCreateTeamChat), so a
+   * message never fails in a group the sender was allowed to open.
+   * Direct messages are never joinable.
+   */
+  async #canJoinGroup(conversation, actorId) {
+    const actor = await User.findById(actorId).select('role department').lean();
+    if (!actor) return false;
+    if (conversation.type === 'department') {
+      if ([ROLES.SUPER_ADMIN, ROLES.ADMIN].includes(actor.role)) return true;
+      if (String(actor.department || '') === String(conversation.department || '')) return true;
+      const dept = await Department.findById(conversation.department).select('head').lean();
+      return String(dept?.head || '') === String(actorId);
+    }
+    if (conversation.type === 'team') {
+      if (actor.role === ROLES.SUPER_ADMIN) return true;
+      const team = await Team.findById(conversation.team).select('lead members').lean();
+      return Boolean(team && isTeamMember(team, actorId));
+    }
+    return false;
+  }
+
   /** Participant or Super Admin may read a conversation. */
   async assertCanAccessConversation(conversation, userId) {
     if (!conversation) throw ApiError.notFound('Conversation not found');
@@ -252,9 +326,16 @@ class ChatService {
     }).map((c) => {
       const read = (c.readState || []).find((r) => String(r.user) === String(userId));
       const lastReadAt = read?.lastReadAt ? new Date(read.lastReadAt) : new Date(0);
+      // A Super Admin observing other members' chats isn't the recipient — those
+      // shouldn't light up their unread badge.
+      const isParticipant = (c.participants || []).some(
+        (p) => String(p?._id || p) === String(userId)
+      );
+      // lastMessageBy is populated here, so compare its _id, not the object.
+      const lastById = String(c.lastMessageBy?._id || c.lastMessageBy || '');
       const unread =
-        c.lastMessageAt && new Date(c.lastMessageAt) > lastReadAt
-          ? String(c.lastMessageBy) !== String(userId)
+        isParticipant && c.lastMessageAt && new Date(c.lastMessageAt) > lastReadAt
+          ? lastById !== String(userId)
           : false;
       return {
         ...c,
@@ -431,7 +512,9 @@ class ChatService {
     const conversation = await this.collapseDuplicateTeamChats(teamId);
     if (!conversation) return null;
 
-    conversation.participants = memberIds;
+    // A Super Admin who joined the channel isn't on the roster — keep them.
+    const managers = await this.#activeManagerIds(conversation.participants, [ROLES.SUPER_ADMIN]);
+    conversation.participants = uniqueIds([...memberIds, ...managers]);
     conversation.title = `${team.name} · Team`;
     await conversation.save();
     return conversation;
@@ -501,13 +584,16 @@ class ChatService {
       }
     }
 
+    // Admins and Super Admins who joined for oversight aren't on the department
+    // roster. Keep them, instead of dropping them whenever a member opens the group.
+    const managers = await this.#activeManagerIds(conversation.participants);
     await Conversation.updateOne(
       { _id: conversation._id },
       {
         $set: {
           isActive: true,
           title: `${dept.name}`,
-          participants: unique,
+          participants: [...new Set([...unique, ...managers])],
         },
         $unset: { dmKey: 1 },
       }
@@ -690,7 +776,18 @@ class ChatService {
     const isParticipant = conversation.participants.some(
       (p) => String(p) === String(actorId)
     );
-    if (!isParticipant) throw ApiError.forbidden('You are not in this conversation');
+    if (!isParticipant) {
+      if (conversation.type === 'dm') {
+        throw ApiError.forbidden(
+          'This is a private conversation between two other members. You can read it but not reply.'
+        );
+      }
+      if (!(await this.#canJoinGroup(conversation, actorId))) {
+        throw ApiError.forbidden('You are not a member of this group');
+      }
+      // Allowed in, but dropped off the roster (e.g. by a roster rebuild) — rejoin.
+      conversation.participants.push(actorId);
+    }
 
     const text = String(body || '').trim();
     const files = (attachments || []).slice(0, MAX_FILES_PER_MESSAGE);

@@ -66,7 +66,7 @@ class TeamService {
           sender: actor.id,
           type: NOTIFICATION_TYPES.TEAM_CREATED,
           message,
-          entityType: 'Project',
+          entityType: 'Team',
           entityId: team._id,
           emailToo: true,
         })
@@ -79,7 +79,7 @@ class TeamService {
         sender: actor.id,
         type: NOTIFICATION_TYPES.TEAM_CREATED,
         message: `You were assigned as Team Lead of "${populated.name}"`,
-        entityType: 'Project',
+        entityType: 'Team',
         entityId: team._id,
         emailToo: true,
       });
@@ -246,8 +246,11 @@ class TeamService {
           sender: actorId,
           type: NOTIFICATION_TYPES.PROJECT_INVITE,
           message: `You were added to team "${team.name}".${projectHint}`,
-          entityType: 'Project',
-          entityId: teamProjects[0]?._id || teamId,
+          // This is about the team. It used to point at the team's first project —
+          // or, when the team had none, at the team id labelled as a project, which
+          // sent newly added members to a "project not found" page.
+          entityType: 'Team',
+          entityId: teamId,
           emailToo: false,
         })
         .catch(() => {});

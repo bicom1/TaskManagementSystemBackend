@@ -23,15 +23,15 @@ class DepartmentService {
         existing = await Department.findOne({ name: namePattern });
       }
       if (existing) {
-        // Only repair the slug and revive the row — never overwrite name or
-        // description, or a Superadmin renaming a built-in department would see
-        // it snap back on the next list call.
-        await Department.findByIdAndUpdate(existing._id, {
+        // Soft-deleted departments must stay gone — never revive presets
+        if (existing.isActive === false) continue;
+        // Repair slug only — never overwrite name/description after SA edits
+        const patch = {
           code: preset.code,
-          isActive: true,
           ...(existing.name ? {} : { name: preset.name }),
           ...(existing.description ? {} : { description: preset.description }),
-        });
+        };
+        await Department.findByIdAndUpdate(existing._id, patch);
         continue;
       }
       await Department.create({

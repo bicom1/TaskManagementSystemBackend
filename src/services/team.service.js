@@ -6,7 +6,7 @@ const notificationService = require('./notification.service');
 const policy = require('./policy.service');
 const ApiError = require('../utils/ApiError.util');
 const { NOTIFICATION_TYPES } = require('../constants/notification.constant');
-const { ROLES } = require('../constants/roles.constant');
+const { ROLES, normalizeRole } = require('../constants/roles.constant');
 const { PERMISSIONS, ACCESS } = require('../constants/permissions.constant');
 const { emitProjectEvent, getIO } = require('../socket/socket');
 
@@ -22,7 +22,7 @@ async function resolveActor(actor) {
  * Membership changes stay on TEAM_MANAGE so leads and admins keep working.
  */
 function assertSuperAdmin(actor, action) {
-  if (actor?.role !== ROLES.SUPER_ADMIN) {
+  if (normalizeRole(actor?.role) !== ROLES.SUPERADMIN) {
     throw ApiError.forbidden(`Only Super Admin can ${action}`);
   }
 }
@@ -94,6 +94,7 @@ class TeamService {
 
     const scope = policy.teamListFilter(actor);
     const filter = {
+      isActive: true,
       ...scope,
       ...(department && { department }),
     };

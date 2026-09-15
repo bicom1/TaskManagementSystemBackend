@@ -2,8 +2,11 @@ const env = require('../config/env');
 
 const LOCALHOST_RE = /localhost|127\.0\.0\.1|^https?:\/\/loc(:|\/|$)/i;
 
-/** Live frontend — always used for email buttons on production / Resend */
-const PRODUCTION_APP_FALLBACK = 'https://task-management-system-frontend-z23.vercel.app';
+/**
+ * Canonical live frontend (cPanel). Invite emails + OAuth fallbacks must use this —
+ * not the old Vercel preview URL.
+ */
+const PRODUCTION_APP_FALLBACK = 'https://bicomworkspace.com';
 
 /**
  * Custom production domain on cPanel. Accepted regardless of CLIENT_URL so a
@@ -43,6 +46,8 @@ function isAllowedClientOrigin(url) {
       ...CUSTOM_DOMAIN_ORIGINS,
       'http://localhost:5173',
       'http://127.0.0.1:5173',
+      // Legacy Vercel preview (keep working during cutover)
+      'https://task-management-system-frontend-z23.vercel.app',
     ].filter(Boolean)
   );
 
@@ -61,7 +66,7 @@ function isAllowedClientOrigin(url) {
 
 /**
  * Base URL for the app (OAuth redirects, health, etc.).
- * Production never returns localhost.
+ * Production never returns localhost — prefers bicomworkspace.com.
  */
 function getClientBaseUrl() {
   const clientUrl = normalizeUrl(env.CLIENT_URL);
@@ -69,10 +74,27 @@ function getClientBaseUrl() {
   const isProd = isProductionDeploy();
 
   if (isProd) {
-    if (clientUrl && !isLocalhostUrl(clientUrl) && clientUrl.startsWith('https://')) {
+    // Prefer the live custom domain when env still points at Vercel/localhost
+    const preferCustom =
+      CUSTOM_DOMAIN_ORIGINS.includes(clientUrl) ||
+      CUSTOM_DOMAIN_ORIGINS.includes(publicUrl);
+    if (preferCustom) {
+      return CUSTOM_DOMAIN_ORIGINS.includes(clientUrl) ? clientUrl : publicUrl;
+    }
+    if (
+      clientUrl &&
+      !isLocalhostUrl(clientUrl) &&
+      clientUrl.startsWith('https://') &&
+      !/vercel\.app/i.test(clientUrl)
+    ) {
       return clientUrl;
     }
-    if (publicUrl && !isLocalhostUrl(publicUrl) && publicUrl.startsWith('https://')) {
+    if (
+      publicUrl &&
+      !isLocalhostUrl(publicUrl) &&
+      publicUrl.startsWith('https://') &&
+      !/vercel\.app/i.test(publicUrl)
+    ) {
       return publicUrl;
     }
     return PRODUCTION_APP_FALLBACK;
@@ -83,11 +105,11 @@ function getClientBaseUrl() {
 
 /**
  * URL used inside emails (invite, task assign, project created, etc.).
- * Prefer the live custom domain so inbox / shared links open bicomworkspace.com.
- * NEVER localhost — real inboxes must open the live site.
+ * Always https://bicomworkspace.com in production so cPanel webmail opens the live app.
  */
 function getEmailAppUrl() {
   const candidates = [
+    CUSTOM_DOMAIN_ORIGINS[0],
     ...CUSTOM_DOMAIN_ORIGINS,
     normalizeUrl(env.PUBLIC_APP_URL),
     normalizeUrl(env.CLIENT_URL),
@@ -96,12 +118,17 @@ function getEmailAppUrl() {
   ];
 
   for (const url of candidates) {
-    if (url && !isLocalhostUrl(url) && /^https:\/\//i.test(url)) {
+    if (
+      url &&
+      !isLocalhostUrl(url) &&
+      /^https:\/\//i.test(url) &&
+      !/vercel\.app/i.test(url)
+    ) {
       return url;
     }
   }
 
-  return CUSTOM_DOMAIN_ORIGINS[0] || PRODUCTION_APP_FALLBACK;
+  return CUSTOM_DOMAIN_ORIGINS[0];
 }
 
 /**

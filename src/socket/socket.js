@@ -47,6 +47,9 @@ function allowedOrigin(origin) {
   const allowed = new Set([
     env.CLIENT_URL,
     PRODUCTION_APP_FALLBACK,
+    'https://bicomworkspace.com',
+    'https://www.bicomworkspace.com',
+    'https://task-management-system-frontend-z23.vercel.app',
     'http://localhost:5173',
     'http://127.0.0.1:5173',
   ]);

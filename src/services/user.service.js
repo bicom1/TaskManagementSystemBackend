@@ -796,20 +796,22 @@ class UserService {
       user.invitePending === false && (user.googleId || user.authProvider === 'local');
     if (alreadyAccepted) {
       throw ApiError.badRequest(
-        user.authProvider === 'local'
+        isCompanyWebmailEmail(email) || user.authProvider === 'local'
           ? 'This invite was already accepted. Please sign in with your email and password.'
           : 'This invite was already accepted. Sign in with Google instead.'
       );
     }
 
-    const isLocalInvite =
-      user.authProvider === 'local' || isCompanyWebmailEmail(email);
+    // Company webmail ALWAYS password registration (even if row was stored as google)
+    const isLocalInvite = isCompanyWebmailEmail(email) || user.authProvider === 'local';
 
-    // Heal older .net rows that were stored as google so password accept works
-    if (isLocalInvite && user.authProvider !== 'local' && user.invitePending !== false) {
+    if (isLocalInvite) {
       await User.updateOne(
         { _id: user._id },
-        { $set: { authProvider: 'local' }, $unset: { googleId: 1 } }
+        {
+          $set: { authProvider: 'local' },
+          $unset: { googleId: 1 },
+        }
       );
     }
 
@@ -819,7 +821,7 @@ class UserService {
     return {
       ...safe,
       email,
-      authProvider: isLocalInvite ? 'local' : safe.authProvider,
+      authProvider: isLocalInvite ? 'local' : safe.authProvider || 'google',
       inviteMode: isLocalInvite ? 'password' : 'google',
       expiresAt: inviteTokenExpires ? new Date(inviteTokenExpires).toISOString() : null,
       expiresInMinutes: ttlMinutes,

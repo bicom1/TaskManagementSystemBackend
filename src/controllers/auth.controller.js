@@ -300,6 +300,12 @@ async function googleInviteStart(req, res) {
     return loginRedirect(res, null, 'invite_expired', clientUrl, null, inviteToken);
   }
 
+  // Company webmail password invites must not enter Google OAuth
+  const { isCompanyWebmailEmail } = require('../utils/companyEmail.util');
+  if (invite.authProvider === 'local' || isCompanyWebmailEmail(invite.email)) {
+    return loginRedirect(res, null, 'password_invite', clientUrl, null, inviteToken);
+  }
+
   // Re-enter the shared Google start with a verified invite
   req.query.inviteToken = inviteToken;
   req.query.loginHint = invite.email;

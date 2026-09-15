@@ -103,8 +103,15 @@ class AuthService {
       throw ApiError.unauthorized('Invalid email or password');
     }
 
-    // Google-only / invited accounts cannot use email+password
-    if (user.authProvider === 'google' || user.invitePending) {
+    // Google-only / still-pending invites cannot use email+password yet
+    if (user.invitePending) {
+      throw ApiError.unauthorized(
+        user.authProvider === 'local'
+          ? 'Finish your invitation first: open the invite link, set a password, then sign in.'
+          : 'This account uses Google Sign-In. Please continue with Google using your invited email.'
+      );
+    }
+    if (user.authProvider === 'google') {
       throw ApiError.unauthorized(
         'This account uses Google Sign-In. Please continue with Google using your invited email.'
       );
@@ -334,6 +341,17 @@ class AuthService {
    */
   async #linkGoogleAndAcceptInvite(user, { googleId, email, name, avatarUrl }) {
     this.#assertGoogleInviteValid(user);
+
+    const { isCompanyWebmailEmail } = require('../utils/companyEmail.util');
+    // Company webmail invites must set a password — do not convert them via Google
+    if (
+      user.authProvider === 'local' &&
+      isCompanyWebmailEmail(user.email)
+    ) {
+      throw ApiError.badRequest(
+        'This invitation uses email and password. Open your invite link, set a password, then sign in on the login page.'
+      );
+    }
 
     const invitedEmail = String(user.email || '')
       .trim()
@@ -673,6 +691,7 @@ class AuthService {
       email: String(user.email).toLowerCase().trim(),
       name: user.name || null,
       inviteToken: String(rawToken || '').trim(),
+      authProvider: user.authProvider || null,
     };
   }
 

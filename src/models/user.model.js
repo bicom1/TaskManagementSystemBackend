@@ -22,7 +22,11 @@ const userSchema = new mongoose.Schema(
       type: String,
       required: [
         function requiredPassword() {
-          return this.authProvider !== 'google';
+          // Google accounts never need a local password
+          if (this.authProvider === 'google') return false;
+          // Pending local invites set a password on accept
+          if (this.invitePending === true) return false;
+          return true;
         },
         'Password is required',
       ],

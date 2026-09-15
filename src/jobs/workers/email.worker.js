@@ -27,7 +27,7 @@ function sanitizeEmailData(template, data) {
   const next = { ...data };
   if (next.actionUrl) next.actionUrl = ensureLiveEmailUrl(next.actionUrl);
   if (next.loginUrl) next.loginUrl = ensureLiveEmailUrl(next.loginUrl, '/login');
-  if (next.acceptUrl) next.acceptUrl = ensureLiveEmailUrl(next.acceptUrl, '/accept-invite');
+  if (next.acceptUrl) next.acceptUrl = ensureLiveEmailUrl(next.acceptUrl);
   if (next.resetUrl) next.resetUrl = ensureLiveEmailUrl(next.resetUrl, '/reset-password');
   if (!next.actionLabel) next.actionLabel = 'Open in BIWORKSPACE';
   return next;

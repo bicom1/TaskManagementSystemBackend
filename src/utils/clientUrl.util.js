@@ -83,10 +83,12 @@ function getClientBaseUrl() {
 
 /**
  * URL used inside emails (invite, task assign, project created, etc.).
+ * Prefer the live custom domain so inbox / shared links open bicomworkspace.com.
  * NEVER localhost — real inboxes must open the live site.
  */
 function getEmailAppUrl() {
   const candidates = [
+    ...CUSTOM_DOMAIN_ORIGINS,
     normalizeUrl(env.PUBLIC_APP_URL),
     normalizeUrl(env.CLIENT_URL),
     getClientBaseUrl(),
@@ -99,11 +101,12 @@ function getEmailAppUrl() {
     }
   }
 
-  return PRODUCTION_APP_FALLBACK;
+  return CUSTOM_DOMAIN_ORIGINS[0] || PRODUCTION_APP_FALLBACK;
 }
 
 /**
  * Rewrite any localhost / broken link to the live app before putting it in email HTML.
+ * Always preserve ?token= / query string when present on the original URL.
  */
 function ensureLiveEmailUrl(url, pathFallback = '') {
   const base = getEmailAppUrl();
@@ -122,6 +125,17 @@ function ensureLiveEmailUrl(url, pathFallback = '') {
     }
     return `${parsed.origin}${suffix === '/' ? '' : suffix}`;
   } catch {
+    // Keep query string if the raw value looks like a path + token
+    const pathMatch = raw.match(/^(\/[^?\s]*)(\?.*)?$/);
+    if (pathMatch) {
+      return `${base}${pathMatch[1]}${pathMatch[2] || ''}`;
+    }
+    const tokenMatch = raw.match(/[?&](?:token|inviteToken)=([^&\s]+)/i);
+    if (tokenMatch?.[1]) {
+      const path = pathFallback || '/register';
+      const cleanPath = path.startsWith('/') ? path.split('?')[0] : `/${path.split('?')[0]}`;
+      return `${base}${cleanPath}?token=${encodeURIComponent(tokenMatch[1])}`;
+    }
     if (pathFallback) {
       return `${base}${pathFallback.startsWith('/') ? pathFallback : `/${pathFallback}`}`;
     }

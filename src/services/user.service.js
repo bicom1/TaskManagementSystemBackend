@@ -26,25 +26,35 @@ const { inviteEmail } = require('../emails/templates');
 const env = require('../config/env');
 const logger = require('../config/logger');
 const { getEmailAppUrl } = require('../utils/clientUrl.util');
+const { isCompanyWebmailEmail } = require('../utils/companyEmail.util');
 const User = require('../models/user.model');
 const Department = require('../models/department.model');
 const Project = require('../models/project.model');
 const { emitUserEvent, forceDisconnectUser } = require('../socket/socket');
 
+/** All invite accept links expire after 10 minutes. */
+const INVITE_TOKEN_TTL_MINUTES = 10;
+
 function hashToken(raw) {
   return crypto.createHash('sha256').update(raw).digest('hex');
 }
-
-/** Invite accept links stay valid for this long after creation. */
-const INVITE_TOKEN_TTL_MINUTES = 5;
 
 function createInviteToken() {
   const raw = crypto.randomBytes(32).toString('hex');
   return { raw, hashed: hashToken(raw) };
 }
 
+function inviteTtlMinutes() {
+  return INVITE_TOKEN_TTL_MINUTES;
+}
+
+function formatInviteTtlLabel(minutes) {
+  const mins = Number(minutes) || INVITE_TOKEN_TTL_MINUTES;
+  return `${mins} minute${mins === 1 ? '' : 's'}`;
+}
+
 function inviteExpiryDate(from = Date.now()) {
-  return new Date(from + INVITE_TOKEN_TTL_MINUTES * 60 * 1000);
+  return new Date(from + inviteTtlMinutes() * 60 * 1000);
 }
 
 function escapeRegex(value) {
@@ -376,6 +386,11 @@ class UserService {
       (name && name.trim()) ||
       normalizedEmail.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 
+    // @bicommunications.net → local password registration; everyone else → Google
+    const isLocalInvite = isCompanyWebmailEmail(normalizedEmail);
+    const inviteAuthProvider = isLocalInvite ? 'local' : 'google';
+    const ttlMinutes = inviteTtlMinutes();
+
     const { raw: inviteRaw, hashed: inviteHashed } = createInviteToken();
     const inviteExpires = inviteExpiryDate();
 
@@ -386,15 +401,27 @@ class UserService {
       getDefaultJobTitle(departmentDoc?.code, role) ||
       undefined;
 
-    /** Invited users must activate via Google Sign-In with the invited email. */
-    const applyGoogleInviteFields = async (doc) => {
+    /** Re-apply invite fields (Google or local/password) without wiping role trust. */
+    const applyInviteFields = async (doc) => {
       const UserModel = require('../models/user.model');
+      const $unset = {
+        passwordResetToken: 1,
+        passwordResetExpires: 1,
+      };
+      if (inviteAuthProvider === 'google') {
+        $unset.password = 1;
+        $unset.googleId = 1;
+      } else {
+        // Local invite: clear any prior Google link / password until they set one
+        $unset.googleId = 1;
+        $unset.password = 1;
+      }
       await UserModel.updateOne(
         { _id: doc._id },
         {
           $set: {
             name: displayName,
-            role: role || ROLES.EMPLOYEE,
+            role: role || ROLES.MEMBER,
             jobTitle: resolvedJobTitle || doc.jobTitle || null,
             department: resolvedDepartment,
             invitePending: true,
@@ -402,16 +429,11 @@ class UserService {
             inviteToken: inviteHashed,
             inviteTokenExpires: inviteExpires,
             isActive: true,
-            authProvider: 'google',
+            authProvider: inviteAuthProvider,
             deactivatedAt: null,
             lastLoginAt: null,
           },
-          $unset: {
-            password: 1,
-            googleId: 1,
-            passwordResetToken: 1,
-            passwordResetExpires: 1,
-          },
+          $unset,
         }
       );
       return UserModel.findById(doc._id).select('+inviteToken +inviteTokenExpires');
@@ -419,13 +441,13 @@ class UserService {
 
     let user;
     if (isReinvite) {
-      user = await applyGoogleInviteFields(existingUser);
+      user = await applyInviteFields(existingUser);
     } else {
       try {
         user = await userRepository.create({
           name: displayName,
           email: normalizedEmail,
-          authProvider: 'google',
+          authProvider: inviteAuthProvider,
           role: role || ROLES.MEMBER,
           jobTitle: resolvedJobTitle || null,
           department: resolvedDepartment,
@@ -453,7 +475,7 @@ class UserService {
               dup.isActive === false ||
               !dup.lastLoginAt);
           if (dup && dupCanReinvite) {
-            user = await applyGoogleInviteFields(dup);
+            user = await applyInviteFields(dup);
           } else {
             throw ApiError.conflict('A user with this email already exists');
           }
@@ -493,9 +515,13 @@ class UserService {
     );
 
     const clientBase = getEmailAppUrl();
+    // Always /accept-invite?token=… — .net shows Complete registration (password);
+    // other emails show Continue with Google. Do NOT use bare /register (loses token UX).
     const acceptUrl = `${clientBase}/accept-invite?token=${inviteRaw}`;
     const loginUrl = `${clientBase}/login`;
     const inviterLabel = publicActorLabel(inviter, 'BIWORKSPACE');
+    const roleLabel = getInviteRoleLabel(departmentDoc?.code, role);
+    const inviteMode = isLocalInvite ? 'password' : 'google';
     const emailPayload = {
       to: normalizedEmail,
       recipientName: displayName,
@@ -503,6 +529,9 @@ class UserService {
       loginUrl,
       acceptUrl,
       emailTo: normalizedEmail,
+      inviteMode,
+      expiresInMinutes: ttlMinutes,
+      roleLabel,
     };
 
     // Prefer official BIWORKSPACE sender — Resend uses noreply@bicomworkspace.com when verified
@@ -511,22 +540,53 @@ class UserService {
       emailFrom = 'BIWORKSPACE <noreply@bicomworkspace.com>';
     }
 
+    const mailText = isLocalInvite
+      ? [
+          `BIWORKSPACE invitation`,
+          ``,
+          `Hi ${displayName},`,
+          `${inviterLabel} invited you to join the BIWORKSPACE workspace as ${roleLabel}.`,
+          ``,
+          `Open this link to accept and set your password:`,
+          acceptUrl,
+          ``,
+          `After that, sign in at: ${loginUrl}`,
+          `Sign-in email: ${normalizedEmail}`,
+          ``,
+          `This invitation link expires in ${formatInviteTtlLabel(ttlMinutes)}.`,
+          `If you did not expect this message, you can ignore it.`,
+        ].join('\n')
+      : [
+          `BIWORKSPACE invitation`,
+          ``,
+          `Hi ${displayName},`,
+          `${inviterLabel} invited you to join the BIWORKSPACE workspace as ${roleLabel}.`,
+          ``,
+          `Open this link to accept and continue with Google:`,
+          acceptUrl,
+          ``,
+          `Use Google account: ${normalizedEmail}`,
+          `Or sign in at: ${loginUrl}`,
+          ``,
+          `This invitation link expires in ${formatInviteTtlLabel(ttlMinutes)}.`,
+          `If you did not expect this message, you can ignore it.`,
+        ].join('\n');
+
+    const inviteRefId = `invite-${String(user._id)}-${Date.now()}`;
     const mailPayload = {
       to: normalizedEmail,
-      subject: `You're invited to BIWORKSPACE`,
+      subject: `BIWORKSPACE invitation for ${normalizedEmail}`,
       html: inviteEmail(emailPayload),
-      text: [
-        `You're invited to BIWORKSPACE`,
-        ``,
-        `Hi ${displayName},`,
-        `${inviterLabel} invited you to join BIWORKSPACE as ${getInviteRoleLabel(departmentDoc?.code, role)}.`,
-        ``,
-        `Accept invite & sign in with Google: ${acceptUrl}`,
-        `Or go to login and choose Continue with Google: ${loginUrl}`,
-        `Use this Google account email: ${normalizedEmail}`,
-        ``,
-        `This invite link expires in ${INVITE_TOKEN_TTL_MINUTES} minutes.`,
-      ].join('\n'),
+      text: mailText,
+      // Transactional headers + tags help inbox placement (not marketing)
+      category: 'transactional',
+      tags: ['invite', isLocalInvite ? 'password-invite' : 'google-invite'],
+      headers: {
+        'X-Entity-Ref-ID': inviteRefId,
+        'X-BIWORKSPACE-Mail-Type': 'invitation',
+        'Auto-Submitted': 'auto-generated',
+        'X-Auto-Response-Suppress': 'OOF, AutoReply',
+      },
     };
 
     // Await Resend briefly (HTTPS works on Render). Never fail the invite if email fails —
@@ -622,7 +682,9 @@ class UserService {
       inviteToken: inviteRaw,
       acceptUrl,
       expiresAt: inviteExpires.toISOString(),
-      expiresInMinutes: INVITE_TOKEN_TTL_MINUTES,
+      expiresInMinutes: ttlMinutes,
+      inviteMode,
+      authProvider: inviteAuthProvider,
       emailSent: emailDelivered,
       emailError,
       emailTo: normalizedEmail,
@@ -634,23 +696,84 @@ class UserService {
       emailDeliveryStatus: mailResult?.deliveryStatus || null,
       teamId: resolvedTeamId || null,
       loginUrl,
-      shareMessage: [
-        `You're invited to BIWORKSPACE by ${inviter?.name || 'a teammate'}.`,
-        `Accept invite & sign in with Google: ${acceptUrl}`,
-        `Or login → Continue with Google: ${loginUrl}`,
-        `Google email must be: ${normalizedEmail}`,
-        `This invite link expires in ${INVITE_TOKEN_TTL_MINUTES} minutes.`,
-      ].join('\n'),
+      shareMessage: isLocalInvite
+        ? [
+            `You're invited to BIWORKSPACE by ${inviter?.name || 'a teammate'}.`,
+            `Accept invitation & set password: ${acceptUrl}`,
+            `Then sign in at: ${loginUrl}`,
+            `Email: ${normalizedEmail}`,
+            `This invite link expires in ${formatInviteTtlLabel(ttlMinutes)}.`,
+          ].join('\n')
+        : [
+            `You're invited to BIWORKSPACE by ${inviter?.name || 'a teammate'}.`,
+            `Accept invite & sign in with Google: ${acceptUrl}`,
+            `Or login → Continue with Google: ${loginUrl}`,
+            `Google email must be: ${normalizedEmail}`,
+            `This invite link expires in ${formatInviteTtlLabel(ttlMinutes)}.`,
+          ].join('\n'),
     };
   }
 
   /**
-   * Password accept is disabled — invited users must sign in with Google.
+   * Password accept for @bicommunications.net (local) invites.
+   * Google invites must use Continue with Google — role always from DB.
    */
-  async acceptInvite() {
-    throw ApiError.badRequest(
-      'Invited accounts must sign in with Google using the invited email address.'
+  async acceptInvite({ token, password }) {
+    const raw = String(token || '').trim();
+    if (!raw) {
+      throw ApiError.badRequest('Invite token is required');
+    }
+
+    const hashed = hashToken(raw);
+    const user = await User.findOne({
+      inviteToken: hashed,
+      inviteTokenExpires: { $gt: new Date() },
+    }).select('+inviteToken +inviteTokenExpires +password');
+
+    if (!user) {
+      throw ApiError.badRequest('Invite link is invalid or has expired');
+    }
+
+    if (!user.invitePending) {
+      throw ApiError.badRequest('This invite was already accepted. Please sign in.');
+    }
+
+    const email = String(user.email || '')
+      .trim()
+      .toLowerCase();
+
+    // Company webmail (@bicommunications.net) always registers with password —
+    // even if an older invite row was stored as authProvider: 'google'.
+    if (!isCompanyWebmailEmail(email)) {
+      throw ApiError.badRequest(
+        'This invitation must be accepted with Google Sign-In using the invited email.'
+      );
+    }
+
+    // Role is already on the user document from invite — never take it from the client
+    user.password = password;
+    user.authProvider = 'local';
+    user.invitePending = false;
+    user.isActive = true;
+    user.deactivatedAt = null;
+    await user.save();
+
+    await User.updateOne(
+      { _id: user._id },
+      {
+        $unset: {
+          inviteToken: 1,
+          inviteTokenExpires: 1,
+          googleId: 1,
+          passwordResetToken: 1,
+          passwordResetExpires: 1,
+        },
+      }
     );
+
+    const fresh = await User.findById(user._id);
+    logger.info(`Invite accepted via password for ${email} role=${fresh?.role}`);
+    return fresh.toSafeObject();
   }
 
   async previewInvite(token) {
@@ -659,18 +782,47 @@ class UserService {
       inviteToken: hashed,
       inviteTokenExpires: { $gt: new Date() },
     })
-      .select('name email role jobTitle invitePending department googleId inviteTokenExpires')
+      .select(
+        'name email role jobTitle invitePending department googleId inviteTokenExpires authProvider'
+      )
       .populate('department', 'name code')
       .lean();
     if (!user) throw ApiError.badRequest('Invite link is invalid or has expired');
-    if (user.invitePending === false && user.googleId) {
-      throw ApiError.badRequest('This invite was already accepted. Sign in with Google instead.');
+
+    const email = String(user.email || '')
+      .trim()
+      .toLowerCase();
+    const alreadyAccepted =
+      user.invitePending === false && (user.googleId || user.authProvider === 'local');
+    if (alreadyAccepted) {
+      throw ApiError.badRequest(
+        user.authProvider === 'local'
+          ? 'This invite was already accepted. Please sign in with your email and password.'
+          : 'This invite was already accepted. Sign in with Google instead.'
+      );
     }
+
+    const isLocalInvite =
+      user.authProvider === 'local' || isCompanyWebmailEmail(email);
+
+    // Heal older .net rows that were stored as google so password accept works
+    if (isLocalInvite && user.authProvider !== 'local' && user.invitePending !== false) {
+      await User.updateOne(
+        { _id: user._id },
+        { $set: { authProvider: 'local' }, $unset: { googleId: 1 } }
+      );
+    }
+
     const { googleId: _g, inviteTokenExpires, ...safe } = user;
+    const ttlMinutes = inviteTtlMinutes();
+
     return {
       ...safe,
+      email,
+      authProvider: isLocalInvite ? 'local' : safe.authProvider,
+      inviteMode: isLocalInvite ? 'password' : 'google',
       expiresAt: inviteTokenExpires ? new Date(inviteTokenExpires).toISOString() : null,
-      expiresInMinutes: INVITE_TOKEN_TTL_MINUTES,
+      expiresInMinutes: ttlMinutes,
     };
   }
 

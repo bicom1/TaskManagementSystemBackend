@@ -22,43 +22,97 @@ function welcomeEmail({ name }) {
   `;
 }
 
-function inviteEmail({ recipientName, inviterName, loginUrl, acceptUrl, emailTo }) {
+/**
+ * @param {object} opts
+ * @param {'password'|'google'} [opts.inviteMode] - password = company webmail; google = default
+ * @param {string|number} [opts.expiresInMinutes]
+ * @param {string} [opts.roleLabel]
+ */
+function inviteEmail({
+  recipientName,
+  inviterName,
+  loginUrl,
+  acceptUrl,
+  emailTo,
+  inviteMode = 'google',
+  expiresInMinutes = 10,
+  roleLabel,
+}) {
   const primaryUrl = acceptUrl || loginUrl;
   const safeName = recipientName || 'there';
+  const isPassword = inviteMode === 'password';
+  const expiryLabel = `${expiresInMinutes} minute${Number(expiresInMinutes) === 1 ? '' : 's'}`;
+
+  const howTo = isPassword
+    ? `
+            <p style="margin:0 0 6px;"><strong>1.</strong> Open the invitation link below</p>
+            <p style="margin:0 0 6px;"><strong>2.</strong> Create a password for your account</p>
+            <p style="margin:0;"><strong>3.</strong> Sign in with <strong>${emailTo || 'your company email'}</strong> and that password</p>
+          `
+    : `
+            <p style="margin:0 0 6px;"><strong>1.</strong> Open the invitation link below</p>
+            <p style="margin:0 0 6px;"><strong>2.</strong> Continue with Google</p>
+            <p style="margin:0;"><strong>3.</strong> Use this Google account: <strong>${emailTo || '—'}</strong></p>
+          `;
+
+  const ctaLabel = isPassword
+    ? 'Accept invitation'
+    : acceptUrl
+      ? 'Accept invitation'
+      : 'Open BIWORKSPACE';
+
+  const footerNote = isPassword
+    ? `This invitation expires in <strong>${expiryLabel}</strong>. Your email and role are set by your admin. After accepting, sign in with your email and password.`
+    : `This invitation expires in <strong>${expiryLabel}</strong>. Sign in with Google using the invited email address.`;
+
+  const midNote = isPassword
+    ? `<p style="font-size:13px;color:#64748b;line-height:1.5;">Email${
+        roleLabel ? ` and role (<strong>${roleLabel}</strong>)` : ''
+      } are pre-filled and cannot be changed. Only create your password on the next screen.</p>`
+    : acceptUrl && loginUrl
+      ? `<p style="font-size:13px;color:#64748b;line-height:1.5;">Use the button above and continue with Google. Password sign-in is not used for this invitation.</p>`
+      : '';
+
   return `
-    <div style="font-family: Arial, Helvetica, sans-serif; max-width: 560px; margin: 0 auto; color: #1a1a1a; background:#f4f6fb; padding:24px 12px;">
+    <div style="font-family: Arial, Helvetica, sans-serif; max-width: 560px; margin: 0 auto; color: #1a1a1a; background:#f8fafc; padding:24px 12px;">
       <div style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:8px;overflow:hidden;border:1px solid #e5e7eb;">
-        <div style="background:#024ad8;color:#fff;padding:20px 24px;">
-          <div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;opacity:0.9;">Invitation from</div>
-          <div style="font-size:22px;font-weight:700;margin-top:4px;">BIWORKSPACE</div>
+        <div style="background:#0f172a;color:#fff;padding:18px 24px;">
+          <div style="font-size:12px;letter-spacing:0.04em;opacity:0.85;">BIWORKSPACE</div>
+          <div style="font-size:18px;font-weight:600;margin-top:4px;">Workspace invitation</div>
         </div>
         <div style="padding:28px 24px;">
-          <h2 style="font-weight:600;margin:0 0 12px;font-size:20px;">You're invited to BIWORKSPACE</h2>
           <p style="margin:0 0 12px;line-height:1.5;">
             Hi <strong>${safeName}</strong>,
           </p>
           <p style="margin:0 0 16px;line-height:1.5;">
-            <strong>${inviterName}</strong> invited you to join <strong>BIWORKSPACE</strong>.
-            This email was sent to <strong>${emailTo || 'your inbox'}</strong> from BIWORKSPACE.
+            <strong>${inviterName}</strong> invited you to the <strong>BIWORKSPACE</strong> workspace${
+              roleLabel ? ` as <strong>${roleLabel}</strong>` : ''
+            }.
+            This message was sent to <strong>${emailTo || 'your inbox'}</strong>.
           </p>
           <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:16px;margin:20px 0;">
-            <p style="margin:0 0 8px;font-size:13px;color:#64748b;text-transform:uppercase;letter-spacing:0.04em;">How to join</p>
-            <p style="margin:0 0 6px;"><strong>1.</strong> Open the invite link below</p>
-            <p style="margin:0 0 6px;"><strong>2.</strong> Sign in with <strong>Google</strong></p>
-            <p style="margin:0;"><strong>3.</strong> Use this Google account: <strong>${emailTo || '—'}</strong></p>
+            <p style="margin:0 0 8px;font-size:12px;color:#64748b;text-transform:uppercase;letter-spacing:0.04em;">Next steps</p>
+            ${howTo}
           </div>
           <p style="margin:24px 0;">
-            <a href="${primaryUrl}" style="display:inline-block;background:#024ad8;color:#fff;padding:14px 28px;text-decoration:none;border-radius:6px;font-weight:700;font-size:14px;">
-              ${acceptUrl ? 'Accept invite &amp; continue with Google' : 'Sign in with Google'}
+            <a href="${primaryUrl}" style="display:inline-block;background:#024ad8;color:#fff;padding:12px 22px;text-decoration:none;border-radius:6px;font-weight:600;font-size:14px;">
+              ${ctaLabel}
             </a>
           </p>
-          ${acceptUrl && loginUrl ? `<p style="font-size:13px;color:#64748b;">Use the button above — invited members must continue with <strong>Google</strong> (password login is not available).</p>` : ''}
+          <p style="font-size:12px;color:#64748b;line-height:1.5;word-break:break-all;">
+            Or paste this link into your browser:<br/>
+            <a href="${primaryUrl}" style="color:#024ad8;">${primaryUrl}</a>
+          </p>
+          ${midNote}
           <p style="color:#94a3b8;font-size:12px;margin-top:24px;line-height:1.5;">
-            This invite expires in <strong>5 minutes</strong>. Invited accounts sign in with Google only — no password is required.
+            ${footerNote}
+          </p>
+          <p style="color:#94a3b8;font-size:12px;margin-top:12px;line-height:1.5;">
+            If you did not expect this invitation, you can ignore this email.
           </p>
         </div>
         <div style="background:#f8fafc;padding:14px 24px;border-top:1px solid #e5e7eb;font-size:12px;color:#64748b;">
-          Sent by <strong>BIWORKSPACE</strong> · Do not reply to this message
+          Sent by BIWORKSPACE · Transactional account invitation
         </div>
       </div>
     </div>

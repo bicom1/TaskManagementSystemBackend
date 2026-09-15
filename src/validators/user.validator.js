@@ -66,15 +66,24 @@ const updateUserSchema = z.object({
 });
 
 const acceptInviteSchema = z.object({
-  body: z.object({
-    token: z.string().min(20),
-    password: z
-      .string()
-      .min(8, 'Password must be at least 8 characters')
-      .regex(/[A-Z]/, 'Password must contain an uppercase letter')
-      .regex(/[0-9]/, 'Password must contain a number'),
-    name: z.string().trim().min(2).max(100).optional(),
-  }),
+  body: z
+    .object({
+      token: z.string().min(20),
+      password: z
+        .string()
+        .min(8, 'Password must be at least 8 characters')
+        .regex(/[A-Z]/, 'Password must contain an uppercase letter')
+        .regex(/[0-9]/, 'Password must contain a number'),
+      confirmPassword: z.string().min(1, 'Confirm your password'),
+      name: z.string().trim().min(2).max(100).optional(),
+      // Ignored if present — role always comes from the invitation record
+      role: z.any().optional(),
+      email: z.any().optional(),
+    })
+    .refine((data) => data.password === data.confirmPassword, {
+      message: 'Passwords do not match',
+      path: ['confirmPassword'],
+    }),
 });
 
 module.exports = {

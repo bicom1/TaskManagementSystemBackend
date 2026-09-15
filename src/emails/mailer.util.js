@@ -287,7 +287,10 @@ async function resolveResendFrom(apiKey) {
   };
 }
 
-async function sendViaResend({ to, subject, html, text, replyTo }, { allowRetryWithTestFrom = true } = {}) {
+async function sendViaResend(
+  { to, subject, html, text, replyTo, headers, tags },
+  { allowRetryWithTestFrom = true } = {}
+) {
   const apiKey = cleanSecret(env.RESEND_API_KEY);
   if (!apiKey) throw new Error('RESEND_API_KEY is not set');
 
@@ -304,6 +307,20 @@ async function sendViaResend({ to, subject, html, text, replyTo }, { allowRetryW
   // Only allow official-domain Reply-To — never a personal Super Admin mailbox
   const safeReply = sanitizeReplyTo(replyTo);
   if (safeReply) payload.reply_to = safeReply;
+
+  if (Array.isArray(tags) && tags.length) {
+    payload.tags = tags
+      .map((t) => String(t || '').trim())
+      .filter(Boolean)
+      .slice(0, 8)
+      .map((name) => ({ name, value: 'true' }));
+  }
+
+  if (headers && typeof headers === 'object') {
+    payload.headers = Object.entries(headers)
+      .filter(([, v]) => v != null && String(v).trim())
+      .map(([name, value]) => ({ name, value: String(value) }));
+  }
 
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
@@ -330,7 +347,7 @@ async function sendViaResend({ to, subject, html, text, replyTo }, { allowRetryW
       logger.warn(`Resend from rejected (${message}) — forcing onboarding@resend.dev`);
       resendDomainCache = { at: Date.now(), verified: new Set() };
       return sendViaResend(
-        { to, subject, html, text, replyTo },
+        { to, subject, html, text, replyTo, headers, tags },
         { allowRetryWithTestFrom: false }
       );
     }
@@ -382,7 +399,7 @@ async function getResendEmailStatus(emailId) {
   }
 }
 
-async function sendViaBrevo({ to, subject, html, text, replyTo }) {
+async function sendViaBrevo({ to, subject, html, text, replyTo, headers, tags, category }) {
   const apiKey = cleanSecret(env.BREVO_API_KEY);
   if (!apiKey) throw new Error('BREVO_API_KEY is not set');
 
@@ -399,6 +416,14 @@ async function sendViaBrevo({ to, subject, html, text, replyTo }) {
     const safeReply = sanitizeReplyTo(replyTo);
     if (safeReply) payload.replyTo = { email: safeReply };
   }
+  if (Array.isArray(tags) && tags.length) {
+    payload.tags = tags.map((t) => String(t || '').trim()).filter(Boolean).slice(0, 8);
+  }
+  // Mark as transactional so Brevo does not treat invites as marketing
+  payload.headers = {
+    'X-Mailin-Type': category === 'transactional' || !category ? 'transactional' : String(category),
+    ...(headers && typeof headers === 'object' ? headers : {}),
+  };
 
   const res = await fetch('https://api.brevo.com/v3/smtp/email', {
     method: 'POST',
@@ -425,7 +450,7 @@ async function sendViaBrevo({ to, subject, html, text, replyTo }) {
   };
 }
 
-async function sendViaSmtp({ to, subject, html, text, replyTo }) {
+async function sendViaSmtp({ to, subject, html, text, replyTo, headers }) {
   const tx = getTransporter();
   const fromInfo = parseFromAddress();
   const from = fromInfo.formatted;
@@ -445,6 +470,8 @@ async function sendViaSmtp({ to, subject, html, text, replyTo }) {
     headers: {
       'X-Mailer': 'BIWORKSPACE',
       'X-Entity-Ref-ID': `biworkspace-${Date.now()}`,
+      'Auto-Submitted': 'auto-generated',
+      ...(headers && typeof headers === 'object' ? headers : {}),
     },
   });
 
@@ -468,7 +495,7 @@ async function sendViaSmtp({ to, subject, html, text, replyTo }) {
   };
 }
 
-async function sendMail({ to, subject, html, text, replyTo }) {
+async function sendMail({ to, subject, html, text, replyTo, headers, tags, category }) {
   if (!to) throw new Error('Missing email recipient');
 
   const recipient = String(to).trim().toLowerCase();
@@ -477,12 +504,26 @@ async function sendMail({ to, subject, html, text, replyTo }) {
 
   if (provider === 'none') {
     const onRender = isRenderHost();
-    throw new Error(
-      onRender
-        ? 'Email not configured on Render. Set RESEND_API_KEY and EMAIL_PROVIDER=resend (SMTP to mail.bicomworkspace.com does not work on Render).'
-        : 'No email provider configured. Set RESEND_API_KEY (recommended), BREVO_API_KEY, or SMTP_* in backend/.env'
+    const hint = onRender
+      ? 'Set RESEND_API_KEY (verified domain) or BREVO_API_KEY on Render.'
+      : 'Set RESEND_API_KEY, BREVO_API_KEY, or SMTP_* in backend/.env';
+    logger.warn(`Email skipped (no provider): to=${recipient} — ${hint}`);
+    fs.appendFileSync(
+      emailLogPath,
+      `${new Date().toISOString()} SKIP to=${recipient} subject=${subject}\n`
     );
+    return {
+      messageId: `log-${Date.now()}`,
+      accepted: [],
+      rejected: [recipient],
+      response: 'logged-only',
+      logged: true,
+      from: preferredFromAddress(),
+      provider: 'none',
+    };
   }
+
+  const mailArgs = { to: recipient, subject, html, text, replyTo, headers, tags, category };
 
   // Prefer Brevo/SMTP when Resend domain is unverified — test From can only
   // reach the Resend account owner, so assignees never get mail otherwise.
@@ -517,11 +558,11 @@ async function sendMail({ to, subject, html, text, replyTo }) {
   try {
     let result;
     if (provider === 'resend') {
-      result = await sendViaResend({ to: recipient, subject, html, text, replyTo });
+      result = await sendViaResend(mailArgs);
     } else if (provider === 'brevo') {
-      result = await sendViaBrevo({ to: recipient, subject, html, text, replyTo });
+      result = await sendViaBrevo(mailArgs);
     } else {
-      result = await sendViaSmtp({ to: recipient, subject, html, text, replyTo });
+      result = await sendViaSmtp(mailArgs);
     }
 
     if (result?.logged) {
@@ -560,13 +601,7 @@ async function sendMail({ to, subject, html, text, replyTo }) {
       try {
         logger.warn(`Falling back to Brevo for ${recipient}`);
         activeProvider = 'brevo';
-        const brevoResult = await sendViaBrevo({
-          to: recipient,
-          subject,
-          html,
-          text,
-          replyTo,
-        });
+        const brevoResult = await sendViaBrevo(mailArgs);
         lastSmtpError = null;
         return {
           ...brevoResult,
@@ -591,13 +626,7 @@ async function sendMail({ to, subject, html, text, replyTo }) {
       try {
         logger.warn(`Falling back to SMTP for ${recipient}`);
         activeProvider = 'smtp';
-        const smtpResult = await sendViaSmtp({
-          to: recipient,
-          subject,
-          html,
-          text,
-          replyTo,
-        });
+        const smtpResult = await sendViaSmtp(mailArgs);
         lastSmtpError = null;
         logger.info(
           `Email sent via smtp fallback to ${recipient}: "${subject}" id=${smtpResult.messageId}`
@@ -638,7 +667,7 @@ async function sendMail({ to, subject, html, text, replyTo }) {
     if ((provider === 'resend' || provider === 'brevo') && isSmtpReady() && smtpAllowed()) {
       logger.warn(`${provider} failed (${err.message}) — falling back to SMTP`);
       try {
-        const fallback = await sendViaSmtp({ to: recipient, subject, html, text, replyTo });
+        const fallback = await sendViaSmtp(mailArgs);
         if (fallback?.logged) throw new Error(err.message);
         logger.info(
           `Email sent via smtp fallback to ${recipient}: "${subject}" id=${fallback.messageId}`

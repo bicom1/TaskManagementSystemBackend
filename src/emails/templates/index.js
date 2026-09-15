@@ -35,13 +35,22 @@ function inviteEmail({
   acceptUrl,
   emailTo,
   inviteMode = 'google',
-  expiresInMinutes = 10,
+  expiresInMinutes = 24 * 60,
   roleLabel,
 }) {
   const primaryUrl = acceptUrl || loginUrl;
   const safeName = recipientName || 'there';
   const isPassword = inviteMode === 'password';
-  const expiryLabel = `${expiresInMinutes} minute${Number(expiresInMinutes) === 1 ? '' : 's'}`;
+  const expiryLabel =
+    Number(expiresInMinutes) >= 1440
+      ? `${Math.round(Number(expiresInMinutes) / 1440)} day${
+          Math.round(Number(expiresInMinutes) / 1440) === 1 ? '' : 's'
+        }`
+      : Number(expiresInMinutes) >= 60
+        ? `${Math.round(Number(expiresInMinutes) / 60)} hour${
+            Math.round(Number(expiresInMinutes) / 60) === 1 ? '' : 's'
+          }`
+        : `${expiresInMinutes} minute${Number(expiresInMinutes) === 1 ? '' : 's'}`;
 
   const howTo = isPassword
     ? `

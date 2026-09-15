@@ -26,14 +26,13 @@ const { inviteEmail } = require('../emails/templates');
 const env = require('../config/env');
 const logger = require('../config/logger');
 const { getEmailAppUrl } = require('../utils/clientUrl.util');
-const { isCompanyWebmailEmail } = require('../utils/companyEmail.util');
 const User = require('../models/user.model');
 const Department = require('../models/department.model');
 const Project = require('../models/project.model');
 const { emitUserEvent, forceDisconnectUser } = require('../socket/socket');
 
-/** All invite accept links expire after 10 minutes. */
-const INVITE_TOKEN_TTL_MINUTES = 10;
+/** Invite accept links stay valid long enough to open webmail and register. */
+const INVITE_TOKEN_TTL_MINUTES = 24 * 60; // 24 hours
 
 function hashToken(raw) {
   return crypto.createHash('sha256').update(raw).digest('hex');
@@ -50,6 +49,14 @@ function inviteTtlMinutes() {
 
 function formatInviteTtlLabel(minutes) {
   const mins = Number(minutes) || INVITE_TOKEN_TTL_MINUTES;
+  if (mins >= 1440) {
+    const days = Math.round(mins / 1440);
+    return `${days} day${days === 1 ? '' : 's'}`;
+  }
+  if (mins >= 60) {
+    const hours = Math.round(mins / 60);
+    return `${hours} hour${hours === 1 ? '' : 's'}`;
+  }
   return `${mins} minute${mins === 1 ? '' : 's'}`;
 }
 
@@ -386,9 +393,10 @@ class UserService {
       (name && name.trim()) ||
       normalizedEmail.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 
-    // @bicommunications.net → local password registration; everyone else → Google
-    const isLocalInvite = isCompanyWebmailEmail(normalizedEmail);
-    const inviteAuthProvider = isLocalInvite ? 'local' : 'google';
+    // All new invites use password registration (Complete registration form).
+    // Existing logged-in Google users are not touched — only pending/re-invites.
+    const isLocalInvite = true;
+    const inviteAuthProvider = 'local';
     const ttlMinutes = inviteTtlMinutes();
 
     const { raw: inviteRaw, hashed: inviteHashed } = createInviteToken();
@@ -715,8 +723,8 @@ class UserService {
   }
 
   /**
-   * Password accept for @bicommunications.net (local) invites.
-   * Google invites must use Continue with Google — role always from DB.
+   * Accept invite by setting a password. Role always comes from the invite row in DB.
+   * Does not migrate existing logged-in Google users — only pending invitees.
    */
   async acceptInvite({ token, password }) {
     const raw = String(token || '').trim();
@@ -741,14 +749,6 @@ class UserService {
     const email = String(user.email || '')
       .trim()
       .toLowerCase();
-
-    // Company webmail (@bicommunications.net) always registers with password —
-    // even if an older invite row was stored as authProvider: 'google'.
-    if (!isCompanyWebmailEmail(email)) {
-      throw ApiError.badRequest(
-        'This invitation must be accepted with Google Sign-In using the invited email.'
-      );
-    }
 
     // Role is already on the user document from invite — never take it from the client
     user.password = password;
@@ -787,7 +787,21 @@ class UserService {
       )
       .populate('department', 'name code')
       .lean();
-    if (!user) throw ApiError.badRequest('Invite link is invalid or has expired');
+
+    if (!user) {
+      // Token missing/expired — never push Google. Tell them to request a fresh invite.
+      const stale = await User.findOne({ inviteToken: hashed })
+        .select('email invitePending authProvider')
+        .lean();
+      if (stale) {
+        throw ApiError.badRequest(
+          'This invite link has expired. Ask your Superadmin to send a new invitation, then open the new link to set your password.'
+        );
+      }
+      throw ApiError.badRequest(
+        'Invite link is invalid or has expired. Ask your Superadmin for a new invite link.'
+      );
+    }
 
     const email = String(user.email || '')
       .trim()
@@ -796,24 +810,20 @@ class UserService {
       user.invitePending === false && (user.googleId || user.authProvider === 'local');
     if (alreadyAccepted) {
       throw ApiError.badRequest(
-        isCompanyWebmailEmail(email) || user.authProvider === 'local'
-          ? 'This invite was already accepted. Please sign in with your email and password.'
-          : 'This invite was already accepted. Sign in with Google instead.'
+        user.authProvider === 'google' || user.googleId
+          ? 'This invite was already accepted. Sign in with Google instead.'
+          : 'This invite was already accepted. Please sign in with your email and password.'
       );
     }
 
-    // Company webmail ALWAYS password registration (even if row was stored as google)
-    const isLocalInvite = isCompanyWebmailEmail(email) || user.authProvider === 'local';
-
-    if (isLocalInvite) {
-      await User.updateOne(
-        { _id: user._id },
-        {
-          $set: { authProvider: 'local' },
-          $unset: { googleId: 1 },
-        }
-      );
-    }
+    // New invites always complete registration with password (do not alter already-joined users)
+    await User.updateOne(
+      { _id: user._id },
+      {
+        $set: { authProvider: 'local' },
+        $unset: { googleId: 1 },
+      }
+    );
 
     const { googleId: _g, inviteTokenExpires, ...safe } = user;
     const ttlMinutes = inviteTtlMinutes();
@@ -821,8 +831,8 @@ class UserService {
     return {
       ...safe,
       email,
-      authProvider: isLocalInvite ? 'local' : safe.authProvider || 'google',
-      inviteMode: isLocalInvite ? 'password' : 'google',
+      authProvider: 'local',
+      inviteMode: 'password',
       expiresAt: inviteTokenExpires ? new Date(inviteTokenExpires).toISOString() : null,
       expiresInMinutes: ttlMinutes,
     };

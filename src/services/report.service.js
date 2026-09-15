@@ -124,12 +124,12 @@ class ReportService {
           $match: {
             project: oid,
             status: 'done',
-            updatedAt: { $gte: since },
+            completedAt: { $gte: since },
           },
         },
         {
           $group: {
-            _id: { $dateToString: { format: '%Y-%m-%d', date: '$updatedAt' } },
+            _id: { $dateToString: { format: '%Y-%m-%d', date: '$completedAt' } },
             completed: { $sum: 1 },
           },
         },
@@ -211,7 +211,7 @@ class ReportService {
         Task.countDocuments({
           ...taskMatch,
           status: 'done',
-          updatedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+          completedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
         }),
         Task.aggregate([
           { $match: { ...taskMatch, status: { $ne: 'done' } } },
@@ -256,23 +256,23 @@ class ReportService {
             $match: {
               ...taskMatch,
               status: 'done',
-              updatedAt: { $gte: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000) },
+              completedAt: { $gte: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000) },
             },
           },
           {
             $group: {
-              _id: { $dateToString: { format: '%Y-%m-%d', date: '$updatedAt' } },
+              _id: { $dateToString: { format: '%Y-%m-%d', date: '$completedAt' } },
               completed: { $sum: 1 },
             },
           },
           { $sort: { _id: 1 } },
         ]),
         Task.find({ ...taskMatch, status: 'done' })
-          .sort({ updatedAt: -1 })
+          .sort({ completedAt: -1, updatedAt: -1 })
           .limit(8)
           .populate('assignees', 'name')
           .populate('project', 'name key')
-          .select('key title updatedAt project assignees')
+          .select('key title completedAt updatedAt project assignees')
           .lean(),
       ]);
 
@@ -317,7 +317,7 @@ class ReportService {
           project: t.project?.name,
           projectKey: t.project?.key,
           assignees: (t.assignees || []).map((a) => a.name),
-          completedAt: t.updatedAt,
+          completedAt: t.completedAt || t.updatedAt,
         })),
       };
     });
@@ -418,7 +418,7 @@ class ReportService {
     }
 
     const tasks = await Task.find(taskMatch)
-      .select('title key status priority dueDate assignees project updatedAt createdAt approvalStatus')
+      .select('title key status priority dueDate assignees project completedAt updatedAt createdAt approvalStatus')
       .populate('assignees', 'name')
       .populate({ path: 'project', select: 'name key team', populate: { path: 'team', select: 'name department' } })
       .lean();
@@ -465,11 +465,12 @@ class ReportService {
       const isDone = task.status === 'done';
       const isOverdue =
         !isDone && task.dueDate && new Date(task.dueDate) < now;
-      const inRangeUpdated = task.updatedAt && new Date(task.updatedAt) >= start && new Date(task.updatedAt) <= end;
+      const finishedAt = task.completedAt || task.updatedAt;
+      const inRangeUpdated = finishedAt && new Date(finishedAt) >= start && new Date(finishedAt) <= end;
       const inRangeCreated = task.createdAt && new Date(task.createdAt) >= start && new Date(task.createdAt) <= end;
 
       if (isDone && inRangeUpdated) {
-        const bucket = trendMap.get(dayKey(task.updatedAt));
+        const bucket = trendMap.get(dayKey(finishedAt));
         if (bucket) bucket.completed += 1;
       }
       if (inRangeCreated) {

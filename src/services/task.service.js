@@ -27,6 +27,19 @@ async function resolveActor(actor) {
   return policy.buildActorContext(actor.id);
 }
 
+/**
+ * completedAt follows status: stamped when a task becomes done, cleared if it is
+ * reopened. Set explicitly on every status write — board moves use bulkWrite,
+ * which skips model middleware. Reports count completions by this date, so
+ * editing an old finished task no longer makes it look completed today.
+ */
+function completionPatch(fromStatus, toStatus) {
+  if (!toStatus || toStatus === fromStatus) return {};
+  if (toStatus === TASK_STATUS.DONE) return { completedAt: new Date() };
+  if (fromStatus === TASK_STATUS.DONE) return { completedAt: null };
+  return {};
+}
+
 class TaskService {
   async create(data, actorInput) {
     const actor = await resolveActor(actorInput);
@@ -70,6 +83,7 @@ class TaskService {
     const task = await taskRepository.create({
       ...data,
       status: initialStatus,
+      ...completionPatch(null, initialStatus),
       key,
       position,
       reporter: actorId,
@@ -276,7 +290,11 @@ class TaskService {
             .map((a) => String(a?._id || a))
             .filter((id) => /^[a-f\d]{24}$/i.test(id))
         ),
-      ].slice(0, MAX_TASK_ASSIGNEES);
+      ];
+      const addsSomeone = updates.assignees.some((aid) => !previousAssigneeIds.includes(aid));
+      if (updates.assignees.length > MAX_TASK_ASSIGNEES && addsSomeone) {
+        throw ApiError.badRequest(`A task can have at most ${MAX_TASK_ASSIGNEES} assignees`);
+      }
     }
 
     if (!updates.status) {
@@ -285,6 +303,7 @@ class TaskService {
         updates.status = autoStatus;
       }
     }
+    Object.assign(updates, completionPatch(existing.status, updates.status));
 
     const task = await taskRepository.updateById(id, updates);
 
@@ -348,6 +367,7 @@ class TaskService {
       'title',
       'description',
       'priority',
+      'startDate',
       'dueDate',
       'labels',
       'checklist',
@@ -401,7 +421,10 @@ class TaskService {
     const nextStatus = resolveAutoStatus(existing, {}, 'comment');
     if (nextStatus === existing.status) return existing;
 
-    return taskRepository.updateById(taskId, { status: nextStatus });
+    return taskRepository.updateById(taskId, {
+      status: nextStatus,
+      ...completionPatch(existing.status, nextStatus),
+    });
   }
 
   async moveToColumn(id, { status, position }, actorInput) {
@@ -443,7 +466,7 @@ class TaskService {
           update: {
             $set:
               String(taskId) === String(existing._id)
-                ? { position: index, status }
+                ? { position: index, status, ...completionPatch(sourceStatus, status) }
                 : { position: index },
           },
         },

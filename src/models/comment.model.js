@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { externalRefSchema, indexExternalRef } = require('./externalRef.schema');
 
 const commentAttachmentSchema = new mongoose.Schema(
   {
@@ -24,15 +25,17 @@ const commentSchema = new mongoose.Schema(
   {
     task: { type: mongoose.Schema.Types.ObjectId, ref: 'Task', required: true },
     author: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    content: { type: String, default: '', trim: true, maxlength: 3000 },
+    content: { type: String, default: '', trim: true, maxlength: 10000 },
     mentions: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     attachments: { type: [commentAttachmentSchema], default: [] },
     links: { type: [commentLinkSchema], default: [] },
     editedAt: { type: Date, default: null },
+    external: { type: externalRefSchema, default: undefined },
   },
   { timestamps: true }
 );
 
 commentSchema.index({ task: 1, createdAt: -1 });
+indexExternalRef(commentSchema);
 
 module.exports = mongoose.model('Comment', commentSchema);

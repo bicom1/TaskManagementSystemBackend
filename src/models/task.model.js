@@ -5,6 +5,7 @@ const {
   TASK_STATUS,
   TASK_PRIORITY,
 } = require('../constants/task.constant');
+const { externalRefSchema, indexExternalRef } = require('./externalRef.schema');
 
 const APPROVAL_STATUS = Object.freeze({
   PENDING: 'pending',
@@ -50,15 +51,18 @@ const recurrenceSchema = new mongoose.Schema(
 const taskSchema = new mongoose.Schema(
   {
     key: { type: String, required: true },
-    title: { type: String, required: true, trim: true, maxlength: 200 },
-    description: { type: String, trim: true, maxlength: 5000 },
+    title: { type: String, required: true, trim: true, maxlength: 300 },
+    description: { type: String, trim: true, maxlength: 20000 },
     project: { type: mongoose.Schema.Types.ObjectId, ref: 'Project', required: true },
     parentTask: { type: mongoose.Schema.Types.ObjectId, ref: 'Task', default: null },
     status: { type: String, enum: TASK_STATUS_VALUES, default: TASK_STATUS.BACKLOG },
     priority: { type: String, enum: TASK_PRIORITY_VALUES, default: TASK_PRIORITY.MEDIUM },
     assignees: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     reporter: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    startDate: { type: Date, default: null },
     dueDate: { type: Date },
+    /** When the task last moved into done; cleared if reopened. Reports count completions by this. */
+    completedAt: { type: Date, default: null },
     labels: [{ type: String, trim: true }],
     attachments: [attachmentSchema],
     checklist: [checklistItemSchema],
@@ -80,6 +84,7 @@ const taskSchema = new mongoose.Schema(
     approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     approvedAt: { type: Date, default: null },
     rejectionReason: { type: String, trim: true, maxlength: 500, default: null },
+    external: { type: externalRefSchema, default: undefined },
   },
   { timestamps: true }
 );
@@ -91,6 +96,8 @@ taskSchema.index({ assignees: 1, status: 1, updatedAt: -1 });
 taskSchema.index({ project: 1, isArchived: 1, status: 1 });
 taskSchema.index({ approvalStatus: 1 });
 taskSchema.index({ title: 'text', description: 'text' });
+taskSchema.index({ status: 1, completedAt: -1 });
+indexExternalRef(taskSchema);
 
 const Task = mongoose.model('Task', taskSchema);
 Task.APPROVAL_STATUS = APPROVAL_STATUS;

@@ -8,7 +8,7 @@ const linkSchema = z.object({
 const createCommentSchema = z.object({
   body: z.object({
     taskId: z.string().length(24),
-    content: z.string().trim().max(3000).optional().default(''),
+    content: z.string().trim().max(10000).optional().default(''),
     mentions: z.array(z.string().length(24)).optional().default([]),
     links: z.array(linkSchema).max(10).optional().default([]),
     attachments: z
@@ -27,7 +27,7 @@ const createCommentSchema = z.object({
 });
 
 const updateCommentSchema = z.object({
-  body: z.object({ content: z.string().trim().min(1).max(3000) }),
+  body: z.object({ content: z.string().trim().min(1).max(10000) }),
   params: z.object({ id: z.string().length(24) }),
 });
 

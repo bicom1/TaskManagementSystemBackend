@@ -5,6 +5,7 @@ const {
   WORKFLOW_TEMPLATE_IDS,
   getWorkflowTemplate,
 } = require('../constants/space.constant');
+const { externalRefSchema, indexExternalRef } = require('./externalRef.schema');
 
 const statusSchema = new mongoose.Schema(
   {
@@ -91,6 +92,7 @@ const projectSchema = new mongoose.Schema(
       enum: SPACE_VIEW_VALUES,
       default: 'list',
     },
+    external: { type: externalRefSchema, default: undefined },
   },
   { timestamps: true }
 );
@@ -100,5 +102,6 @@ projectSchema.index({ members: 1 });
 projectSchema.index({ key: 1 }, { unique: true });
 projectSchema.index({ owner: 1 });
 projectSchema.index({ developer: 1 });
+indexExternalRef(projectSchema);
 
 module.exports = mongoose.model('Project', projectSchema);

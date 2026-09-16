@@ -12,7 +12,11 @@ const { sendMail } = require('../emails/mailer.util');
 const { passwordResetEmail } = require('../emails/templates');
 const logger = require('../config/logger');
 const { emailPath } = require('../utils/clientUrl.util');
-const { ROLES } = require('../constants/roles.constant');
+const { ROLES, normalizeRole } = require('../constants/roles.constant');
+
+function isSuperAdmin(user) {
+  return normalizeRole(user?.role) === ROLES.SUPERADMIN;
+}
 
 class AuthService {
   getGoogleRedirectUri() {
@@ -103,22 +107,23 @@ class AuthService {
       throw ApiError.unauthorized('Invalid email or password');
     }
 
-    // Google-only / still-pending invites cannot use email+password yet
+    // Pending invites must set a password from the invite link first
     if (user.invitePending) {
       throw ApiError.unauthorized(
-        user.authProvider === 'local'
-          ? 'Finish your invitation first: open the invite link, set a password, then sign in.'
-          : 'This account uses Google Sign-In. Please continue with Google using your invited email.'
-      );
-    }
-    if (user.authProvider === 'google') {
-      throw ApiError.unauthorized(
-        'This account uses Google Sign-In. Please continue with Google using your invited email.'
+        'Finish your invitation first: open the invite link, set a password, then sign in.'
       );
     }
 
     if (!user.password) {
-      throw ApiError.unauthorized('Invalid email or password');
+      if (user.authProvider !== 'google') {
+        throw ApiError.unauthorized('Invalid email or password');
+      }
+      // Google-only account: Super Admins keep Google; everyone else must set a password
+      throw ApiError.unauthorized(
+        isSuperAdmin(user)
+          ? 'This account uses Google Sign-In. Please continue with Google.'
+          : 'This account has no password yet. Use "Forgot password?" to set one, then sign in.'
+      );
     }
 
     const isMatch = await user.comparePassword(password);
@@ -152,7 +157,17 @@ class AuthService {
       };
     }
 
-    if (user.authProvider === 'google' || user.invitePending) {
+    if (user.invitePending) {
+      return {
+        message:
+          'Your invitation is not finished yet. Open your invite link to set a password, then sign in.',
+        emailSent: false,
+        invitePending: true,
+      };
+    }
+
+    // Google-only Super Admins keep Google; other Google accounts may set a password here
+    if (user.authProvider === 'google' && isSuperAdmin(user)) {
       return {
         message:
           'This account uses Google Sign-In. Use Continue with Google on the login page instead of resetting a password.',
@@ -240,6 +255,7 @@ class AuthService {
     }
 
     user.password = password;
+    user.authProvider = 'local';
     user.passwordResetToken = undefined;
     user.passwordResetExpires = undefined;
     user.invitePending = false;
@@ -298,6 +314,16 @@ class AuthService {
       expectedEmail,
       inviteToken,
     });
+  }
+
+  /** Google sign-in is reserved for Super Admins — everyone else uses email + password. */
+  #assertGoogleAllowed(user) {
+    if (isSuperAdmin(user)) return;
+    const err = ApiError.forbidden(
+      'Google sign-in is only available to Super Admins. Sign in with your email and password.'
+    );
+    err.reason = 'google_superadmin_only';
+    throw err;
   }
 
   #assertGoogleInviteValid(user) {
@@ -461,6 +487,7 @@ class AuthService {
             `wrong_google_email: Sign in with Google using ${invitedEmail} — the same email you were invited with.`
           );
         }
+        this.#assertGoogleAllowed(inviteUser);
 
         let activated = await this.#linkGoogleAndAcceptInvite(inviteUser, {
           googleId,
@@ -497,6 +524,7 @@ class AuthService {
     let user = await userRepository.findByGoogleId(googleId);
 
     if (user) {
+      this.#assertGoogleAllowed(user);
       const refresh = {};
       if (avatarUrl) refresh.avatarUrl = avatarUrl;
       if (name && name !== user.name) refresh.name = name;
@@ -519,6 +547,7 @@ class AuthService {
         withPassword: true,
       });
       if (user) {
+        this.#assertGoogleAllowed(user);
         if (user.invitePending) {
           user = await this.#linkGoogleAndAcceptInvite(user, {
             googleId,
@@ -558,6 +587,7 @@ class AuthService {
               withPassword: true,
             }));
           if (user) {
+            this.#assertGoogleAllowed(user);
             if (user.invitePending) {
               user = await this.#linkGoogleAndAcceptInvite(user, {
                 googleId,
@@ -692,6 +722,7 @@ class AuthService {
       name: user.name || null,
       inviteToken: String(rawToken || '').trim(),
       authProvider: user.authProvider || null,
+      role: user.role || null,
     };
   }
 

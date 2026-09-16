@@ -49,7 +49,6 @@ function resolveOAuthClientUrl(storedUrl) {
 
 function resolveGoogleErrorCode(err) {
   const msg = String(err?.message || '');
-  if (err?.reason) return err.reason;
   if (err?.statusCode === 403) {
     if (msg.includes('expired')) return 'invite_expired';
     if (msg.startsWith('wrong_google_email') || msg.includes('wrong_google_email')) {
@@ -301,14 +300,9 @@ async function googleInviteStart(req, res) {
     return loginRedirect(res, null, 'invite_expired', clientUrl, null, inviteToken);
   }
 
-  // Password invites (company webmail, and every non–Super Admin) must not enter Google OAuth
+  // Company webmail password invites must not enter Google OAuth
   const { isCompanyWebmailEmail } = require('../utils/companyEmail.util');
-  const { ROLES, normalizeRole } = require('../constants/roles.constant');
-  if (
-    invite.authProvider === 'local' ||
-    isCompanyWebmailEmail(invite.email) ||
-    normalizeRole(invite.role) !== ROLES.SUPERADMIN
-  ) {
+  if (invite.authProvider === 'local' || isCompanyWebmailEmail(invite.email)) {
     return loginRedirect(res, null, 'password_invite', clientUrl, null, inviteToken);
   }
 
@@ -402,7 +396,6 @@ async function forgotPassword(req, res) {
       emailFrom: result.emailFrom,
       expiresInMinutes: result.expiresInMinutes,
       googleOnly: Boolean(result.googleOnly),
-      invitePending: Boolean(result.invitePending),
     },
   });
 }

@@ -24,46 +24,14 @@ async function main() {
   if (!admin) throw new Error(`Admin not found: ${adminEmail}`);
 
   const actor = await policy.buildActorContext(admin._id);
-  const User = mongoose.model('User');
-
-  // 1) Members cannot use Google — the invite stays pending for the password form
-  const memberEmail = `invite.google.member.${Date.now()}@example.com`;
-  const memberInvite = await userService.invite(
-    {
-      email: memberEmail,
-      name: 'Invite Google Member Smoke',
-      role: ROLES.MEMBER,
-      departmentName: 'Development',
-    },
-    actor
-  );
-  let memberErr = null;
-  try {
-    await authService.acceptInviteWithGoogleProfile({
-      inviteToken: memberInvite.inviteToken,
-      email: memberEmail,
-      googleId: `smoke-google-${crypto.randomBytes(8).toString('hex')}`,
-      name: 'Invite Google Member Smoke',
-    });
-  } catch (err) {
-    memberErr = err;
-  }
-  if (memberErr?.reason !== 'google_superadmin_only') {
-    throw new Error(`member Google accept should be rejected, got: ${memberErr?.message || 'success'}`);
-  }
-  const memberRow = await userRepository.findByEmailInsensitive(memberEmail);
-  if (!memberRow?.invitePending || memberRow.googleId) {
-    throw new Error('rejected member invite was modified');
-  }
-  await User.deleteOne({ _id: memberRow._id });
-
-  // 2) Super Admin invitees may accept with Google
   const email = `invite.google.${Date.now()}@example.com`;
+
   const invited = await userService.invite(
     {
       email,
       name: 'Invite Google Smoke',
-      role: ROLES.SUPERADMIN,
+      role: ROLES.MEMBER,
+      departmentName: 'Development',
     },
     actor
   );
@@ -94,7 +62,7 @@ async function main() {
   if (again.invitePending) throw new Error('DB invitePending still true');
   if (String(again.googleId) !== fakeGoogleId) throw new Error('googleId not linked');
 
-  await User.deleteOne({ _id: again._id });
+  await mongoose.model('User').deleteOne({ _id: again._id });
 
   console.log('INVITE_GOOGLE_OK', email);
   await mongoose.disconnect();

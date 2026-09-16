@@ -49,6 +49,7 @@ function resolveOAuthClientUrl(storedUrl) {
 
 function resolveGoogleErrorCode(err) {
   const msg = String(err?.message || '');
+  if (msg.startsWith('google_superadmin_only')) return 'google_superadmin_only';
   if (err?.statusCode === 403) {
     if (msg.includes('expired')) return 'invite_expired';
     if (msg.startsWith('wrong_google_email') || msg.includes('wrong_google_email')) {
@@ -387,6 +388,7 @@ async function forgotPassword(req, res) {
       emailFrom: result.emailFrom,
       expiresInMinutes: result.expiresInMinutes,
       googleOnly: Boolean(result.googleOnly),
+      invitePending: Boolean(result.invitePending),
     },
   });
 }

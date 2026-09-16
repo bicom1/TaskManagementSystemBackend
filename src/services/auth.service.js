@@ -131,14 +131,15 @@ class AuthService {
         'Finish your invitation first: open the invite link, set a password, then sign in.'
       );
     }
-    if (user.authProvider === 'google') {
+    if (user.authProvider === 'google' && !user.password) {
       if (this.#isSuperAdminRole(user.role)) {
         throw ApiError.unauthorized(
           'This Superadmin account uses Google Sign-In. Please continue with Google.'
         );
       }
+      // Members who joined with Google before the Superadmin-only rule set a password via reset
       throw ApiError.unauthorized(
-        'This account must use email and password. Open your invite link to set a password if you have not already.'
+        'This account has no password yet. Use "Forgot password?" to set one, then sign in.'
       );
     }
 
@@ -177,13 +178,22 @@ class AuthService {
       };
     }
 
-    if (user.authProvider === 'google' || user.invitePending) {
+    if (user.invitePending) {
       return {
-        message: this.#isSuperAdminRole(user.role)
-          ? 'This Superadmin account uses Google Sign-In. Use Continue with Google on the login page instead of resetting a password.'
-          : 'Use your email and password to sign in. If you still need to set a password, open your invite link first.',
+        message:
+          'Your invitation is not finished yet. Open your invite link to set a password, then sign in.',
         emailSent: false,
-        googleOnly: this.#isSuperAdminRole(user.role),
+        invitePending: true,
+      };
+    }
+
+    // Google-only Superadmins keep Google; other Google accounts get a code to set a password
+    if (user.authProvider === 'google' && this.#isSuperAdminRole(user.role)) {
+      return {
+        message:
+          'This Superadmin account uses Google Sign-In. Use Continue with Google on the login page instead of resetting a password.',
+        emailSent: false,
+        googleOnly: true,
       };
     }
 
@@ -266,6 +276,7 @@ class AuthService {
     }
 
     user.password = password;
+    user.authProvider = 'local';
     user.passwordResetToken = undefined;
     user.passwordResetExpires = undefined;
     user.invitePending = false;

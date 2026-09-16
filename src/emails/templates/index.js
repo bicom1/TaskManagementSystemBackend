@@ -65,9 +65,9 @@ function inviteEmail({
           `;
 
   const ctaLabel = isPassword
-    ? 'Accept invitation'
+    ? 'Complete registration'
     : acceptUrl
-      ? 'Accept invitation'
+      ? 'Complete registration'
       : 'Open BIWORKSPACE';
 
   const footerNote = isPassword

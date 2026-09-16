@@ -25,7 +25,7 @@ const { sendMail } = require('../emails/mailer.util');
 const { inviteEmail } = require('../emails/templates');
 const env = require('../config/env');
 const logger = require('../config/logger');
-const { getEmailAppUrl } = require('../utils/clientUrl.util');
+const { getEmailAppUrl, ensureLiveEmailUrl } = require('../utils/clientUrl.util');
 const User = require('../models/user.model');
 const Department = require('../models/department.model');
 const Project = require('../models/project.model');
@@ -525,8 +525,8 @@ class UserService {
     const clientBase = getEmailAppUrl();
     // Live + local: /register?token=… → Complete registration (password form).
     // Keep /accept-invite as an alias; email CTA uses /register so it matches local.
-    const acceptUrl = `${clientBase}/register?token=${inviteRaw}`;
-    const loginUrl = `${clientBase}/login`;
+    const acceptUrl = ensureLiveEmailUrl(`${clientBase}/register?token=${inviteRaw}`);
+    const loginUrl = ensureLiveEmailUrl(`${clientBase}/login`, '/login');
     const inviterLabel = publicActorLabel(inviter, 'BIWORKSPACE');
     const roleLabel = getInviteRoleLabel(departmentDoc?.code, role);
     const inviteMode = isLocalInvite ? 'password' : 'google';

@@ -187,6 +187,9 @@ class ReportService {
         deptWorkload,
         trendRows,
         recentDone,
+        memberRows,
+        projectRows,
+        openTaskRows,
       ] = await Promise.all([
         Project.countDocuments({ ...projectFilter, status: { $ne: 'archived' } }),
         Team.countDocuments(teamFilter),
@@ -274,6 +277,29 @@ class ReportService {
           .populate('project', 'name key')
           .select('key title updatedAt project assignees')
           .lean(),
+        User.find({
+          ...userFilter,
+          isActive: true,
+          email: { $not: { $regex: '^deleted_', $options: 'i' } },
+        })
+          .select('name email role jobTitle avatarUrl department')
+          .populate('department', 'name code')
+          .sort({ name: 1 })
+          .limit(50)
+          .lean(),
+        Project.find({ ...projectFilter, status: { $ne: 'archived' } })
+          .select('name key status color icon team updatedAt')
+          .populate('team', 'name')
+          .sort({ updatedAt: -1 })
+          .limit(50)
+          .lean(),
+        Task.find({ ...taskMatch, status: { $ne: 'done' }, parentTask: null })
+          .sort({ updatedAt: -1 })
+          .limit(50)
+          .populate('assignees', 'name avatarUrl')
+          .populate('project', 'name key')
+          .select('key title status priority dueDate project assignees updatedAt')
+          .lean(),
       ]);
 
       const byStatusMap = Object.fromEntries(byStatus.map((s) => [s._id, s.count]));
@@ -318,6 +344,39 @@ class ReportService {
           projectKey: t.project?.key,
           assignees: (t.assignees || []).map((a) => a.name),
           completedAt: t.updatedAt,
+        })),
+        members: (memberRows || []).map((u) => ({
+          id: String(u._id),
+          name: u.name,
+          email: u.email,
+          role: u.role,
+          jobTitle: u.jobTitle || '',
+          avatarUrl: u.avatarUrl || null,
+          department: u.department?.name || null,
+        })),
+        projects: (projectRows || []).map((p) => ({
+          id: String(p._id),
+          name: p.name,
+          key: p.key,
+          status: p.status,
+          color: p.color || null,
+          team: p.team?.name || null,
+        })),
+        tasks: (openTaskRows || []).map((t) => ({
+          id: String(t._id),
+          key: t.key,
+          title: t.title,
+          status: t.status,
+          priority: t.priority,
+          dueDate: t.dueDate || null,
+          projectId: t.project?._id ? String(t.project._id) : t.project ? String(t.project) : null,
+          project: t.project?.name || null,
+          projectKey: t.project?.key || null,
+          assignees: (t.assignees || []).map((a) => ({
+            id: String(a._id || a),
+            name: a.name,
+            avatarUrl: a.avatarUrl || null,
+          })),
         })),
       };
     });

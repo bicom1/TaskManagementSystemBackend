@@ -12,9 +12,31 @@ const { sendMail } = require('../emails/mailer.util');
 const { passwordResetEmail } = require('../emails/templates');
 const logger = require('../config/logger');
 const { emailPath } = require('../utils/clientUrl.util');
-const { ROLES } = require('../constants/roles.constant');
+const { ROLES, normalizeRole } = require('../constants/roles.constant');
 
 class AuthService {
+  #isSuperAdminRole(role) {
+    return normalizeRole(role) === ROLES.SUPERADMIN;
+  }
+
+  #assertGoogleAllowedForUser(user) {
+    if (!user) {
+      throw ApiError.forbidden(
+        'google_superadmin_only: Only Superadmin can sign in with Google. Invited users must open their invite link, set a password, then sign in with email and password.'
+      );
+    }
+    if (user.invitePending) {
+      throw ApiError.badRequest(
+        'This invitation uses email and password. Open your invite link, set a password, then sign in on the login page.'
+      );
+    }
+    if (!this.#isSuperAdminRole(user.role)) {
+      throw ApiError.forbidden(
+        'google_superadmin_only: Only Superadmin can sign in with Google. Use your email and password instead.'
+      );
+    }
+  }
+
   getGoogleRedirectUri() {
     const configured = String(env.GOOGLE_REDIRECT_URI || '').trim();
     const renderBase = String(process.env.RENDER_EXTERNAL_URL || '').trim().replace(/\/$/, '');
@@ -103,17 +125,20 @@ class AuthService {
       throw ApiError.unauthorized('Invalid email or password');
     }
 
-    // Google-only / still-pending invites cannot use email+password yet
+    // Google-only Superadmin cannot use email+password; invited users must finish invite first
     if (user.invitePending) {
       throw ApiError.unauthorized(
-        user.authProvider === 'local'
-          ? 'Finish your invitation first: open the invite link, set a password, then sign in.'
-          : 'This account uses Google Sign-In. Please continue with Google using your invited email.'
+        'Finish your invitation first: open the invite link, set a password, then sign in.'
       );
     }
     if (user.authProvider === 'google') {
+      if (this.#isSuperAdminRole(user.role)) {
+        throw ApiError.unauthorized(
+          'This Superadmin account uses Google Sign-In. Please continue with Google.'
+        );
+      }
       throw ApiError.unauthorized(
-        'This account uses Google Sign-In. Please continue with Google using your invited email.'
+        'This account must use email and password. Open your invite link to set a password if you have not already.'
       );
     }
 
@@ -154,10 +179,11 @@ class AuthService {
 
     if (user.authProvider === 'google' || user.invitePending) {
       return {
-        message:
-          'This account uses Google Sign-In. Use Continue with Google on the login page instead of resetting a password.',
+        message: this.#isSuperAdminRole(user.role)
+          ? 'This Superadmin account uses Google Sign-In. Use Continue with Google on the login page instead of resetting a password.'
+          : 'Use your email and password to sign in. If you still need to set a password, open your invite link first.',
         emailSent: false,
-        googleOnly: true,
+        googleOnly: this.#isSuperAdminRole(user.role),
       };
     }
 
@@ -310,6 +336,8 @@ class AuthService {
   }
 
   async #linkGoogleAccount(user, { googleId, email, avatarUrl }) {
+    this.#assertGoogleAllowedForUser(user);
+
     const updates = {
       googleId,
       invitePending: false,
@@ -327,6 +355,7 @@ class AuthService {
           (await userRepository.findByGoogleId(googleId)) ||
           (await userRepository.findByEmailInsensitiveWithInvite(email, { withPassword: true }));
         if (!recovered) throw err;
+        this.#assertGoogleAllowedForUser(recovered);
         const recover = { invitePending: false };
         if (!recovered.googleId) recover.googleId = googleId;
         if (avatarUrl) recover.avatarUrl = avatarUrl;
@@ -337,91 +366,12 @@ class AuthService {
   }
 
   /**
-   * Activate an invited user via Google — atomic $set/$unset (no save validators).
+   * Invites never activate via Google — password registration only.
    */
-  async #linkGoogleAndAcceptInvite(user, { googleId, email, name, avatarUrl }) {
-    this.#assertGoogleInviteValid(user);
-
-    const { isCompanyWebmailEmail } = require('../utils/companyEmail.util');
-    // Company webmail invites must set a password — do not convert them via Google
-    if (
-      user.authProvider === 'local' &&
-      isCompanyWebmailEmail(user.email)
-    ) {
-      throw ApiError.badRequest(
-        'This invitation uses email and password. Open your invite link, set a password, then sign in on the login page.'
-      );
-    }
-
-    const invitedEmail = String(user.email || '')
-      .trim()
-      .toLowerCase();
-    if (invitedEmail && invitedEmail !== email) {
-      throw ApiError.forbidden(
-        `wrong_google_email: Sign in with Google using ${invitedEmail} — the same email you were invited with.`
-      );
-    }
-
-    const taken = await userRepository.findByGoogleId(googleId);
-    if (taken && String(taken._id) !== String(user._id)) {
-      throw ApiError.conflict(
-        'This Google account is already linked to another BIWORKSPACE user. Use the Google account for the invited email.'
-      );
-    }
-
-    // If a soft-deleted row still holds this googleId, release it first
-    const User = require('../models/user.model');
-    await User.updateMany(
-      {
-        googleId,
-        _id: { $ne: user._id },
-        $or: [{ isActive: false }, { email: { $regex: '^deleted_', $options: 'i' } }],
-      },
-      { $unset: { googleId: 1 } }
+  async #linkGoogleAndAcceptInvite() {
+    throw ApiError.badRequest(
+      'This invitation uses email and password. Open your invite link, set a password, then sign in on the login page.'
     );
-    const $set = {
-      googleId,
-      authProvider: 'google',
-      invitePending: false,
-      isActive: true,
-      deactivatedAt: null,
-    };
-    if (avatarUrl) $set.avatarUrl = avatarUrl;
-    if (name && String(name).trim()) $set.name = String(name).trim();
-
-    let result;
-    try {
-      result = await User.updateOne(
-        { _id: user._id },
-        {
-          $set,
-          $unset: {
-            password: 1,
-            inviteToken: 1,
-            inviteTokenExpires: 1,
-          },
-        }
-      );
-    } catch (err) {
-      if (err?.code === 11000) {
-        throw ApiError.conflict(
-          'This Google account is already linked to another BIWORKSPACE user. Use the Google account for the invited email.'
-        );
-      }
-      logger.error('Invite Google accept update failed', err);
-      throw ApiError.badRequest(
-        err?.message || 'Could not activate invite with Google. Please try again.'
-      );
-    }
-
-    if (!result || (result.matchedCount === 0 && result.n === 0)) {
-      throw ApiError.notFound('Invited user not found');
-    }
-
-    const doc = await User.findById(user._id);
-    if (!doc) throw ApiError.notFound('Invited user not found after activate');
-    logger.info(`Invite accepted via Google for ${doc.email} id=${doc._id}`);
-    return doc;
   }
 
   async #loginWithGoogleProfile(payload, { expectedEmail, inviteToken } = {}) {
@@ -446,35 +396,11 @@ class AuthService {
       }
     }
 
-    // ── 0) Invite-token path (new invited users) ──────────────────────────
-    // Soft-fail: if the token is stale/missing in DB, continue to email match
-    // so a valid invited Gmail can still activate.
+    // Invite tokens always mean password registration — never Google accept
     const rawInvite = String(inviteToken || '').trim();
     if (rawInvite) {
-      const inviteUser = await this.#findInviteUserByRawToken(rawInvite);
-      if (inviteUser) {
-        const invitedEmail = String(inviteUser.email || '')
-          .trim()
-          .toLowerCase();
-        if (invitedEmail !== email) {
-          throw ApiError.forbidden(
-            `wrong_google_email: Sign in with Google using ${invitedEmail} — the same email you were invited with.`
-          );
-        }
-
-        let activated = await this.#linkGoogleAndAcceptInvite(inviteUser, {
-          googleId,
-          email,
-          name,
-          avatarUrl,
-        });
-        await userRepository.updateLastLogin(activated._id);
-        activated = await userRepository.findById(activated._id);
-        const tokens = this.#issueTokens(activated);
-        return { user: activated.toSafeObject(), ...tokens };
-      }
-      logger.warn(
-        `Invite token present but not found/expired; falling back to email match for ${email}`
+      throw ApiError.badRequest(
+        'This invitation uses email and password. Open your invite link, set a password, then sign in on the login page.'
       );
     }
 
@@ -482,57 +408,36 @@ class AuthService {
       .trim()
       .toLowerCase();
     if (expected && expected !== email) {
-      // Hint mismatch: still allow if this Google email has its own pending invite
-      const pendingForEmail = await userRepository.findByEmailInsensitiveWithInvite(email, {
-        withPassword: true,
-      });
-      if (!pendingForEmail?.invitePending) {
-        throw ApiError.forbidden(
-          `wrong_google_email: Sign in with Google using ${expected} — the same email you were invited with.`
-        );
-      }
+      throw ApiError.forbidden(
+        `wrong_google_email: Sign in with Google using ${expected}.`
+      );
     }
 
     // ── 1) Already linked to this Google account ──────────────────────────
     let user = await userRepository.findByGoogleId(googleId);
 
     if (user) {
+      this.#assertGoogleAllowedForUser(user);
       const refresh = {};
       if (avatarUrl) refresh.avatarUrl = avatarUrl;
       if (name && name !== user.name) refresh.name = name;
       if (Object.keys(refresh).length) {
         user = await userRepository.updateById(user._id, refresh);
       }
-      if (user?.invitePending) {
-        user = await this.#linkGoogleAndAcceptInvite(user, {
-          googleId,
-          email,
-          name,
-          avatarUrl,
-        });
-      }
     }
 
-    // ── 2) Same email already registered (invited or existing) ────────────
+    // ── 2) Same email already registered ──────────────────────────────────
     if (!user) {
       user = await userRepository.findByEmailInsensitiveWithInvite(email, {
         withPassword: true,
       });
       if (user) {
-        if (user.invitePending) {
-          user = await this.#linkGoogleAndAcceptInvite(user, {
-            googleId,
-            email,
-            name,
-            avatarUrl,
-          });
-        } else {
-          user = await this.#linkGoogleAccount(user, { googleId, email, avatarUrl });
-        }
+        this.#assertGoogleAllowedForUser(user);
+        user = await this.#linkGoogleAccount(user, { googleId, email, avatarUrl });
       }
     }
 
-    // ── 3) Brand-new Google user — invitation-only ────────────────────────
+    // ── 3) Brand-new Google user — empty DB bootstrap as Superadmin only ──
     if (!user) {
       try {
         const userCount = await userRepository.countAll();
@@ -547,7 +452,9 @@ class AuthService {
             jobTitle: 'Superadmin',
           });
         } else {
-          throw ApiError.forbidden('You are not invited to this workspace.');
+          throw ApiError.forbidden(
+            'google_superadmin_only: Only Superadmin can sign in with Google. Invited users must open their invite link, set a password, then sign in with email and password.'
+          );
         }
       } catch (err) {
         if (err instanceof ApiError) throw err;
@@ -558,29 +465,16 @@ class AuthService {
               withPassword: true,
             }));
           if (user) {
-            if (user.invitePending) {
-              user = await this.#linkGoogleAndAcceptInvite(user, {
-                googleId,
-                email,
-                name,
-                avatarUrl,
-              });
-            } else {
-              const recover = {
-                invitePending: false,
-                authProvider: 'google',
-                $unset: { inviteToken: 1, inviteTokenExpires: 1 },
-              };
-              if (!user.googleId) recover.googleId = googleId;
-              if (avatarUrl) recover.avatarUrl = avatarUrl;
-              user = await userRepository.updateById(user._id, recover);
+            this.#assertGoogleAllowedForUser(user);
+            if (!user.googleId) {
+              user = await this.#linkGoogleAccount(user, { googleId, email, avatarUrl });
             }
           }
         }
         if (!user) {
           logger.error('Google sign-in failed after duplicate key', err);
-          throw ApiError.badRequest(
-            'Could not complete Google sign-in. Open your invite link and choose Continue with Google.'
+          throw ApiError.forbidden(
+            'google_superadmin_only: Only Superadmin can sign in with Google. Invited users must open their invite link, set a password, then sign in with email and password.'
           );
         }
       }
@@ -590,17 +484,9 @@ class AuthService {
       throw ApiError.unauthorized('Account is deactivated');
     }
 
+    this.#assertGoogleAllowedForUser(user);
+
     await userRepository.updateLastLogin(user._id);
-
-    if (user.invitePending) {
-      user = await this.#linkGoogleAndAcceptInvite(user, {
-        googleId,
-        email,
-        name,
-        avatarUrl,
-      });
-    }
-
     user = await userRepository.findById(user._id);
     const authTokens = this.#issueTokens(user);
     return { user: user.toSafeObject(), ...authTokens };

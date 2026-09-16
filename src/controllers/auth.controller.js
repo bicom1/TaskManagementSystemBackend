@@ -76,7 +76,7 @@ function inviteAcceptPath(inviteToken, errorCode = null) {
   const params = new URLSearchParams();
   params.set('token', token);
   if (errorCode) params.set('googleError', String(errorCode));
-  return `/accept-invite?${params.toString()}`;
+  return `/register?${params.toString()}`;
 }
 
 function clearGoogleOAuthCookies(res) {
@@ -300,17 +300,8 @@ async function googleInviteStart(req, res) {
     return loginRedirect(res, null, 'invite_expired', clientUrl, null, inviteToken);
   }
 
-  // Company webmail password invites must not enter Google OAuth
-  const { isCompanyWebmailEmail } = require('../utils/companyEmail.util');
-  if (invite.authProvider === 'local' || isCompanyWebmailEmail(invite.email)) {
-    return loginRedirect(res, null, 'password_invite', clientUrl, null, inviteToken);
-  }
-
-  // Re-enter the shared Google start with a verified invite
-  req.query.inviteToken = inviteToken;
-  req.query.loginHint = invite.email;
-  req.query.clientUrl = clientUrl;
-  return googleStart(req, res);
+  // All invites use password registration — never Google OAuth for invite accept
+  return loginRedirect(res, null, 'password_invite', clientUrl, null, inviteToken);
 }
 
 /** Google redirects here with ?code= */

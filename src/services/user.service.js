@@ -523,9 +523,9 @@ class UserService {
     );
 
     const clientBase = getEmailAppUrl();
-    // Always /accept-invite?token=… — .net shows Complete registration (password);
-    // other emails show Continue with Google. Do NOT use bare /register (loses token UX).
-    const acceptUrl = `${clientBase}/accept-invite?token=${inviteRaw}`;
+    // Live + local: /register?token=… → Complete registration (password form).
+    // Keep /accept-invite as an alias; email CTA uses /register so it matches local.
+    const acceptUrl = `${clientBase}/register?token=${inviteRaw}`;
     const loginUrl = `${clientBase}/login`;
     const inviterLabel = publicActorLabel(inviter, 'BIWORKSPACE');
     const roleLabel = getInviteRoleLabel(departmentDoc?.code, role);

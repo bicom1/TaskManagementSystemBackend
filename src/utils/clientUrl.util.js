@@ -146,9 +146,18 @@ function ensureLiveEmailUrl(url, pathFallback = '') {
 
   try {
     const parsed = new URL(raw);
-    const suffix = `${parsed.pathname || ''}${parsed.search || ''}${parsed.hash || ''}`;
+    let pathname = parsed.pathname || '';
+    // Canonical invite path for live + local email links
+    if (/^\/accept-invite\/?$/i.test(pathname)) {
+      pathname = '/register';
+    }
+    const suffix = `${pathname}${parsed.search || ''}${parsed.hash || ''}`;
     if (isLocalhostUrl(parsed.origin) || !/^https:$/i.test(parsed.protocol)) {
       return `${base}${suffix === '/' ? '' : suffix}` || base;
+    }
+    // Always normalize accept-invite → register on the live app host
+    if (/bicomworkspace\.com$/i.test(parsed.hostname) && pathname === '/register') {
+      return `${base}${suffix === '/' ? '' : suffix}`;
     }
     return `${parsed.origin}${suffix === '/' ? '' : suffix}`;
   } catch {
